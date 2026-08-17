@@ -100,37 +100,41 @@ def make_tool(
 
 list_files_tool = make_tool(
     "list_files",
-    "List files and directories inside the given directory.",
+    "List files and directories inside the given directory. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "directory": {
             "type": "string",
-            "description": "Directory path to inspect.",
+            "description": "Directory path to inspect. Optional; defaults to the current directory.",
         }
     },
-    ["directory"],
+    [],
 )
 
 
 list_directory_tree_tool = make_tool(
     "list_directory_tree",
-    "Return a recursive directory tree up to the specified depth.",
+    "Return a recursive directory tree up to the specified depth. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
-            "description": "Directory path to inspect.",
+            "description": "Directory path to inspect. Optional; defaults to the current directory.",
         },
         "depth": {
             "type": "integer",
-            "description": "Maximum recursion depth.",
+            "description": "Maximum recursion depth. Optional; defaults to 3.",
         },
     },
-    ["path", "depth"],
+    [],
 )
 
 
 read_file_tool = make_tool(
     "read_file",
-    "Read the contents of a text file, optionally restricting the returned line range.",
+    "Read the contents of a text file, optionally restricting the returned line range. Returns a structured result "
+    '{"success", "data", "message", "error"}; on success data.content holds 1-based numbered lines '
+    '("<n>: <text>"). start_line/end_line are inclusive.',
     {
         "path": {
             "type": "string",
@@ -138,20 +142,21 @@ read_file_tool = make_tool(
         },
         "start_line": {
             "type": ["integer", "null"],
-            "description": "1-based starting line. Use null to start from the beginning.",
+            "description": "1-based starting line (inclusive). Use null to start from the beginning.",
         },
         "end_line": {
             "type": ["integer", "null"],
-            "description": "1-based ending line. Use null to read until the end.",
+            "description": "1-based ending line (inclusive). Use null to read until the end.",
         },
     },
-    ["path", "start_line", "end_line"],
+    ["path"],
 )
 
 
 write_file_tool = make_tool(
     "write_file",
-    "Write text content to a file.",
+    "Write text content to a file. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -163,16 +168,17 @@ write_file_tool = make_tool(
         },
         "overwrite": {
             "type": "boolean",
-            "description": "Whether an existing file may be overwritten.",
+            "description": "Whether an existing file may be overwritten. Optional; defaults to True.",
         },
     },
-    ["path", "content", "overwrite"],
+    ["path", "content"],
 )
 
 
 get_file_info_tool = make_tool(
     "get_file_info",
-    "Return metadata about a file or directory.",
+    "Return metadata about a file or directory. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -185,7 +191,8 @@ get_file_info_tool = make_tool(
 
 create_directory_tool = make_tool(
     "create_directory",
-    "Create a directory and any missing parent directories.",
+    "Create a directory and any missing parent directories. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -198,7 +205,8 @@ create_directory_tool = make_tool(
 
 delete_file_tool = make_tool(
     "delete_file",
-    "Delete a file.",
+    "Delete a file. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -211,7 +219,8 @@ delete_file_tool = make_tool(
 
 delete_directory_tool = make_tool(
     "delete_directory",
-    "Delete a directory.",
+    "Delete a directory. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -219,16 +228,17 @@ delete_directory_tool = make_tool(
         },
         "recursive": {
             "type": "boolean",
-            "description": "Whether to recursively delete the directory contents.",
+            "description": "Whether to recursively delete the directory contents. Optional; defaults to False.",
         },
     },
-    ["path", "recursive"],
+    ["path"],
 )
 
 
 move_file_tool = make_tool(
     "move_file",
-    "Move a file or directory to another location.",
+    "Move a file or directory to another location. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "source": {
             "type": "string",
@@ -245,7 +255,8 @@ move_file_tool = make_tool(
 
 copy_file_tool = make_tool(
     "copy_file",
-    "Copy a file or directory to another location.",
+    "Copy a file or directory to another location. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "source": {
             "type": "string",
@@ -266,7 +277,10 @@ copy_file_tool = make_tool(
 
 search_code_tool = make_tool(
     "search_code",
-    "Search source code files for a text query.",
+    "Search source code files for a plain-text substring. Returns a structured result "
+    '{"success", "data", "message", "error"}; results include metadata files_scanned, files_skipped and '
+    "truncated. Matching is case-insensitive by default (case_sensitive=True makes it exact-case); extensions are "
+    'bare names like "py" (leading dots optional).',
     {
         "query": {
             "type": "string",
@@ -274,21 +288,31 @@ search_code_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search.",
+            "description": "Directory or file to search. Optional; defaults to the current directory.",
         },
         "extensions": {
             "type": ["array", "null"],
             "items": {"type": "string"},
-            "description": "Optional list of file extensions to include.",
+            "description": "Optional list of file extensions to include, e.g. [\"py\", \"js\"]. Use null for the default code extension list.",
+        },
+        "case_sensitive": {
+            "type": "boolean",
+            "description": "Whether the search should be case-sensitive. Optional; defaults to False.",
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Maximum number of matches to return. Optional; defaults to 200.",
         },
     },
-    ["query", "path", "extensions"],
+    ["query"],
 )
 
 
 grep_tool = make_tool(
     "grep",
-    "Search files using a regular expression pattern.",
+    "Search files under a path for lines matching a regular expression. Returns a structured result "
+    '{"success", "data", "message", "error"}; results include metadata files_scanned, files_skipped and truncated. '
+    "No extension filter is applied (every file type is searched).",
     {
         "pattern": {
             "type": "string",
@@ -296,20 +320,25 @@ grep_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search.",
+            "description": "Directory or file to search. Optional; defaults to the current directory.",
         },
         "ignore_case": {
             "type": "boolean",
-            "description": "Whether the search should ignore letter case.",
+            "description": "Whether the search should ignore letter case. Optional; defaults to False.",
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Maximum number of matches to return. Optional; defaults to 200.",
         },
     },
-    ["pattern", "path", "ignore_case"],
+    ["pattern"],
 )
 
 
 find_files_tool = make_tool(
     "find_files",
-    "Find files using a glob pattern.",
+    "Find files using a glob pattern. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "pattern": {
             "type": "string",
@@ -317,16 +346,18 @@ find_files_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Root directory to search.",
+            "description": "Root directory to search. Optional; defaults to the current directory.",
         },
     },
-    ["pattern", "path"],
+    ["pattern"],
 )
 
 
 find_symbol_tool = make_tool(
     "find_symbol",
-    "Find Python classes, functions, or other named symbols in a project.",
+    "Find Python function and class definitions named symbol. Returns a structured result "
+    '{"success", "data", "message", "error"}. Matches FUNCTION and CLASS definitions only (kinds: "function", '
+    '"async_function", "class"); variables and assignments are NOT matched.',
     {
         "symbol": {
             "type": "string",
@@ -334,16 +365,18 @@ find_symbol_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search.",
+            "description": "Directory or file to search. Optional; defaults to the current directory.",
         },
     },
-    ["symbol", "path"],
+    ["symbol"],
 )
 
 
 find_references_tool = make_tool(
     "find_references",
-    "Find references to a symbol in the project.",
+    "Find references to a symbol in the project. Returns a structured result "
+    '{"success", "data", "message", "error"}. This is a TEXTUAL word-boundary search, not semantic reference '
+    "analysis: it matches comments, strings and the definition itself.",
     {
         "symbol": {
             "type": "string",
@@ -351,16 +384,17 @@ find_references_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search.",
+            "description": "Directory or file to search. Optional; defaults to the current directory.",
         },
     },
-    ["symbol", "path"],
+    ["symbol"],
 )
 
 
 get_file_symbols_tool = make_tool(
     "get_file_symbols",
-    "Return top-level Python classes and functions defined in a file.",
+    "Return top-level Python classes and functions defined in a file. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -377,7 +411,9 @@ get_file_symbols_tool = make_tool(
 
 apply_patch_tool = make_tool(
     "apply_patch",
-    "Apply a unified diff patch to a file.",
+    "Apply a unified diff patch to a file via git apply. Returns a structured result "
+    '{"success", "data", "message", "error"}; on success data contains {"file", "changed"}. The patch is validated '
+    "with a dry run first and the file is left untouched on failure.",
     {
         "file": {
             "type": "string",
@@ -394,7 +430,8 @@ apply_patch_tool = make_tool(
 
 insert_text_tool = make_tool(
     "insert_text",
-    "Insert text before a specified 1-based line number.",
+    "Insert text before a specified 1-based line number. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -402,7 +439,7 @@ insert_text_tool = make_tool(
         },
         "line": {
             "type": "integer",
-            "description": "1-based line number.",
+            "description": "1-based line number before which to insert.",
         },
         "text": {
             "type": "string",
@@ -415,7 +452,8 @@ insert_text_tool = make_tool(
 
 replace_text_tool = make_tool(
     "replace_text",
-    "Replace occurrences of text inside a file.",
+    "Replace occurrences of text inside a file. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -431,16 +469,17 @@ replace_text_tool = make_tool(
         },
         "count": {
             "type": "integer",
-            "description": "Maximum number of replacements. Use -1 for all occurrences.",
+            "description": "Maximum number of replacements. Optional; use -1 for all occurrences.",
         },
     },
-    ["path", "old", "new", "count"],
+    ["path", "old", "new"],
 )
 
 
 delete_lines_tool = make_tool(
     "delete_lines",
-    "Delete an inclusive range of lines from a file.",
+    "Delete an inclusive range of lines from a file. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -465,7 +504,9 @@ delete_lines_tool = make_tool(
 
 run_command_tool = make_tool(
     "run_command",
-    "Execute a shell command.",
+    "Execute a shell command. Returns a structured result "
+    '{"success", "data", "message", "error"}. Executes an arbitrary shell command and is inherently unsafe - use '
+    "only when the command is trusted and necessary.",
     {
         "cmd": {
             "type": "string",
@@ -473,20 +514,21 @@ run_command_tool = make_tool(
         },
         "cwd": {
             "type": ["string", "null"],
-            "description": "Working directory. Use null for the current directory.",
+            "description": "Working directory. Use null for the project root.",
         },
         "timeout": {
             "type": "integer",
-            "description": "Maximum execution time in seconds.",
+            "description": "Maximum execution time in seconds. Optional; defaults to 30.",
         },
     },
-    ["cmd", "cwd", "timeout"],
+    ["cmd"],
 )
 
 
 run_python_tool = make_tool(
     "run_python",
-    "Execute a Python file using the current Python interpreter.",
+    "Execute a Python file using the current Python interpreter. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "file": {
             "type": "string",
@@ -495,41 +537,43 @@ run_python_tool = make_tool(
         "args": {
             "type": ["array", "null"],
             "items": {"type": "string"},
-            "description": "Optional command-line arguments.",
+            "description": "Optional command-line arguments. Use null for no arguments.",
         },
         "timeout": {
             "type": "integer",
-            "description": "Maximum execution time in seconds.",
+            "description": "Maximum execution time in seconds. Optional; defaults to 30.",
         },
     },
-    ["file", "args", "timeout"],
+    ["file"],
 )
 
 
 run_tests_tool = make_tool(
     "run_tests",
-    "Run the project's test command.",
+    "Run the project's test command. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cmd": {
             "type": "string",
-            "description": "Test command to run, such as pytest.",
+            "description": "Test command to run. Optional; defaults to \"pytest\".",
         },
         "cwd": {
             "type": ["string", "null"],
-            "description": "Working directory.",
+            "description": "Working directory. Use null for the project root.",
         },
         "timeout": {
             "type": "integer",
-            "description": "Maximum execution time in seconds.",
+            "description": "Maximum execution time in seconds. Optional; defaults to 120.",
         },
     },
-    ["cmd", "cwd", "timeout"],
+    [],
 )
 
 
 check_syntax_tool = make_tool(
     "check_syntax",
-    "Check a Python file for syntax errors without executing it.",
+    "Check a Python file for syntax errors without executing it. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
@@ -542,43 +586,45 @@ check_syntax_tool = make_tool(
 
 lint_project_tool = make_tool(
     "lint_project",
-    "Run the project's linting command.",
+    "Run the project's linting command. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cmd": {
             "type": "string",
-            "description": "Lint command, such as ruff check .",
+            "description": "Lint command. Optional; defaults to \"ruff check .\".",
         },
         "cwd": {
             "type": ["string", "null"],
-            "description": "Working directory.",
+            "description": "Working directory. Use null for the project root.",
         },
         "timeout": {
             "type": "integer",
-            "description": "Maximum execution time in seconds.",
+            "description": "Maximum execution time in seconds. Optional; defaults to 120.",
         },
     },
-    ["cmd", "cwd", "timeout"],
+    [],
 )
 
 
 typecheck_project_tool = make_tool(
     "typecheck_project",
-    "Run the project's type-checking command.",
+    "Run the project's type-checking command. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cmd": {
             "type": "string",
-            "description": "Type-checking command, such as mypy .",
+            "description": "Type-checking command. Optional; defaults to \"mypy .\".",
         },
         "cwd": {
             "type": ["string", "null"],
-            "description": "Working directory.",
+            "description": "Working directory. Use null for the project root.",
         },
         "timeout": {
             "type": "integer",
-            "description": "Maximum execution time in seconds.",
+            "description": "Maximum execution time in seconds. Optional; defaults to 120.",
         },
     },
-    ["cmd", "cwd", "timeout"],
+    [],
 )
 
 
@@ -588,7 +634,8 @@ typecheck_project_tool = make_tool(
 
 get_current_directory_tool = make_tool(
     "get_current_directory",
-    "Return the current working directory.",
+    "Return the current working directory. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {},
     [],
 )
@@ -596,20 +643,23 @@ get_current_directory_tool = make_tool(
 
 get_project_root_tool = make_tool(
     "get_project_root",
-    "Return the root directory of the current Git project.",
+    "Return the root directory of the current Git project. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
-            "description": "Path from which to locate the project root.",
+            "description": "Path from which to locate the project root. Optional; defaults to the current directory.",
         }
     },
-    ["path"],
+    [],
 )
 
 
 get_environment_tool = make_tool(
     "get_environment",
-    "Return the current environment variables.",
+    "Return safe runtime metadata about the environment. Returns a structured result "
+    '{"success", "data", "message", "error"}. Never returns environment variable VALUES (they may contain secrets); '
+    "only the directory list of PATH and environment variable NAMES are included.",
     {},
     [],
 )
@@ -617,7 +667,8 @@ get_environment_tool = make_tool(
 
 get_python_version_tool = make_tool(
     "get_python_version",
-    "Return the currently running Python version.",
+    "Return the currently running Python version. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {},
     [],
 )
@@ -625,7 +676,8 @@ get_python_version_tool = make_tool(
 
 which_command_tool = make_tool(
     "which_command",
-    "Find the executable path for a command.",
+    "Find the executable path for a command. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "command": {
             "type": "string",
@@ -642,40 +694,44 @@ which_command_tool = make_tool(
 
 inspect_project_tool = make_tool(
     "inspect_project",
-    "Inspect the project's structure and identify important project characteristics.",
+    "Inspect the project's structure and identify important project characteristics. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
-            "description": "Project directory to inspect.",
+            "description": "Project directory to inspect. Optional; defaults to the current directory.",
         }
     },
-    ["path"],
+    [],
 )
 
 
 detect_project_type_tool = make_tool(
     "detect_project_type",
-    "Detect the likely project types from common configuration files.",
+    "Detect the likely project types from common configuration files. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": "string",
-            "description": "Project directory to inspect.",
+            "description": "Project directory to inspect. Optional; defaults to the current directory.",
         }
     },
-    ["path"],
+    [],
 )
 
 
 get_project_metadata_tool = make_tool(
     "get_project_metadata",
-    "Read common project configuration and metadata.",
+    "Extract compact metadata from common project configuration files. Returns a structured result "
+    '{"success", "data", "message", "error"}. Only selected fields are extracted; full configuration file contents '
+    "are never included.",
     {
         "path": {
             "type": "string",
-            "description": "Project directory to inspect.",
+            "description": "Project directory to inspect. Optional; defaults to the current directory.",
         }
     },
-    ["path"],
+    [],
 )
 
 
@@ -685,84 +741,90 @@ get_project_metadata_tool = make_tool(
 
 git_status_tool = make_tool(
     "git_status",
-    "Return the current Git status.",
+    "Return the current Git status. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         }
     },
-    ["cwd"],
+    [],
 )
 
 
 git_diff_tool = make_tool(
     "git_diff",
-    "Show the current unstaged Git diff.",
+    "Show the current unstaged Git diff. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "path": {
             "type": ["string", "null"],
-            "description": "Optional file or path to limit the diff.",
+            "description": "Optional file or path to limit the diff. Use null for the whole repository.",
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["path", "cwd"],
+    [],
 )
 
 
 git_log_tool = make_tool(
     "git_log",
-    "Return recent Git commits.",
+    "Return recent Git commits. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "n": {
             "type": "integer",
-            "description": "Number of commits to return.",
+            "description": "Number of commits to return. Optional; defaults to 10.",
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["n", "cwd"],
+    [],
 )
 
 
 git_show_tool = make_tool(
     "git_show",
-    "Show the contents and metadata of a Git commit.",
+    "Show the contents and metadata of a Git commit. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "commit": {
             "type": "string",
-            "description": "Commit identifier, such as HEAD or a commit SHA.",
+            "description": "Commit identifier. Optional; defaults to HEAD.",
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["commit", "cwd"],
+    [],
 )
 
 
 git_branch_tool = make_tool(
     "git_branch",
-    "List local Git branches.",
+    "List local Git branches. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         }
     },
-    ["cwd"],
+    [],
 )
 
 
 git_branch_create_tool = make_tool(
     "git_branch_create",
-    "Create a new Git branch.",
+    "Create a new Git branch. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "name": {
             "type": "string",
@@ -770,16 +832,17 @@ git_branch_create_tool = make_tool(
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["name", "cwd"],
+    ["name"],
 )
 
 
 git_branch_switch_tool = make_tool(
     "git_branch_switch",
-    "Switch to an existing Git branch.",
+    "Switch to an existing Git branch. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "name": {
             "type": "string",
@@ -787,16 +850,17 @@ git_branch_switch_tool = make_tool(
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["name", "cwd"],
+    ["name"],
 )
 
 
 git_add_tool = make_tool(
     "git_add",
-    "Stage files for the next Git commit.",
+    "Stage files for the next Git commit. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "paths": {
             "type": "array",
@@ -805,16 +869,18 @@ git_add_tool = make_tool(
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["paths", "cwd"],
+    ["paths"],
 )
 
 
 git_commit_tool = make_tool(
     "git_commit",
-    "Create a Git commit.",
+    "Create a Git commit. Returns a structured result "
+    '{"success", "data", "message", "error"}. Runs "git commit -m <message>"; does NOT stage changes (run git_add '
+    "first) and does not amend or force.",
     {
         "message": {
             "type": "string",
@@ -822,36 +888,38 @@ git_commit_tool = make_tool(
         },
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         },
     },
-    ["message", "cwd"],
+    ["message"],
 )
 
 
 git_stash_tool = make_tool(
     "git_stash",
-    "Stash current Git changes.",
+    "Stash current Git changes. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         }
     },
-    ["cwd"],
+    [],
 )
 
 
 git_stash_pop_tool = make_tool(
     "git_stash_pop",
-    "Restore the most recent Git stash.",
+    "Restore the most recent Git stash. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "cwd": {
             "type": "string",
-            "description": "Git repository directory.",
+            "description": "Git repository directory. Optional; defaults to the project root.",
         }
     },
-    ["cwd"],
+    [],
 )
 
 
@@ -861,7 +929,9 @@ git_stash_pop_tool = make_tool(
 
 search_web_tool = make_tool(
     "search_web",
-    "Search the web for information relevant to the current task.",
+    "Search the web for information relevant to the current task. Returns a structured result "
+    '{"success", "data", "message", "error"}. Informational: web search is provided natively by the agent\'s Azure '
+    "WebSearchTool.",
     {
         "query": {
             "type": "string",
@@ -874,7 +944,9 @@ search_web_tool = make_tool(
 
 fetch_url_tool = make_tool(
     "fetch_url",
-    "Fetch text content from a URL.",
+    "Fetch text content from a URL. Returns a structured result "
+    '{"success", "data", "message", "error"}. The response is limited to ~200KB; truncation is reported in the '
+    "result, never silent. Timeouts are honored.",
     {
         "url": {
             "type": "string",
@@ -882,10 +954,10 @@ fetch_url_tool = make_tool(
         },
         "timeout": {
             "type": "integer",
-            "description": "Maximum request time in seconds.",
+            "description": "Maximum request time in seconds. Optional; defaults to 20.",
         },
     },
-    ["url", "timeout"],
+    ["url"],
 )
 
 
@@ -895,20 +967,23 @@ fetch_url_tool = make_tool(
 
 get_current_time_tool = make_tool(
     "get_current_time",
-    "Return the current local or UTC time.",
+    "Return the current local or UTC time. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {
         "utc": {
             "type": "boolean",
-            "description": "Whether to return UTC time.",
+            "description": "Whether to return UTC time. Optional; defaults to False (local time).",
         }
     },
-    ["utc"],
+    [],
 )
 
 
 calculate_tool = make_tool(
     "calculate",
-    "Safely evaluate a mathematical expression.",
+    "Safely evaluate a mathematical expression. Returns a structured result "
+    '{"success", "data", "message", "error"}. Safe arithmetic evaluator (whitelisted math functions only; arbitrary '
+    "Python code is NOT executed).",
     {
         "expression": {
             "type": "string",
@@ -921,7 +996,8 @@ calculate_tool = make_tool(
 
 generate_uuid_tool = make_tool(
     "generate_uuid",
-    "Generate a random UUID4 identifier.",
+    "Generate a random UUID4 identifier. Returns a structured result "
+    '{"success", "data", "message", "error"}.',
     {},
     [],
 )

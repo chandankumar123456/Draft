@@ -76,7 +76,10 @@ while True:
 
         if function is None:
             result = {
-                "error": f"Unknown tool: {item.name}"
+                "success": False,
+                "data": None,
+                "message": None,
+                "error": f"Unknown tool: {item.name}",
             }
 
         else:
@@ -85,11 +88,20 @@ while True:
 
                 result = function(**arguments)
 
+            except json.JSONDecodeError as exc:
+                result = {
+                    "success": False,
+                    "data": None,
+                    "message": None,
+                    "error": f"Invalid JSON arguments for tool '{item.name}': {str(exc)}",
+                }
+
             except Exception as exc:
                 result = {
-                    "error": (
-                        f"Tool '{item.name}' failed: {str(exc)}"
-                    )
+                    "success": False,
+                    "data": None,
+                    "message": None,
+                    "error": f"Tool '{item.name}' failed: {str(exc)}",
                 }
 
         input_list.append(
