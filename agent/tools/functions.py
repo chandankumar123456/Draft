@@ -14,7 +14,7 @@ import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -734,184 +734,394 @@ def copy_file(
 # 2. CODE SEARCH
 # ============================================================
 
-def find_files(
-    pattern: str,
-    path: str = ".",
+SEARCH_MAX_FILE_BYTES = 1_048_576
+SEARCH_DEFAULT_EXTENSIONS: tuple[str, ...] = (
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".cs",
+    ".sql",
+    ".html",
+    ".css",
+)
+
+
+def _search_normalize_extensions(
+    extensions: list[str] | None,
 ) -> list[str]:
+    """Normalize a caller-supplied extension list for suffix matching.
+
+    Entries may be given with or without a leading dot and in any
+    case ("py", ".py", "PY", " .py " all normalize to "py"). Empty
+    or whitespace-only entries are dropped. The result is
+    deduplicated and preserves first-seen order.
     """
-    Find files using pathlib glob patterns.
+    if not extensions:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for entry in extensions:
+        clean = entry.strip().lstrip(".").lower()
+        if clean and clean not in seen:
+            normalized.append(clean)
+            seen.add(clean)
+    return normalized
 
-    Examples:
-        *.py
-        **/*.py
-        test_*.py
+
+def _search_kind(node: ast.AST) -> str:
+    """Return the search kind label for a definition node.
+
+    Maps ast.FunctionDef/ast.AsyncFunctionDef/ast.ClassDef to
+    "function"/"async_function"/"class".
     """
-    root = _resolve_path(path)
-
-    if not root.exists():
-        return [f"Error: path does not exist: {path}"]
-
-    try:
-        return [
-            str(item)
-            for item in root.glob(pattern)
-            if item.is_file()
-        ]
-    except Exception as exc:
-        return [f"Error searching files: {exc}"]
+    if isinstance(node, ast.AsyncFunctionDef):
+        return "async_function"
+    if isinstance(node, ast.FunctionDef):
+        return "function"
+    if isinstance(node, ast.ClassDef):
+        return "class"
+    return type(node).__name__
 
 
-def grep(
-    pattern: str,
-    path: str = ".",
-    ignore_case: bool = False,
-) -> list[dict[str, Any]]:
+def _search_iter_readable(
+    root: Path,
+    skipped_files: list[dict[str, Any]],
+    include: Callable[[Path], bool] | None = None,
+) -> Iterator[tuple[Path, str]]:
+    """Yield (file_path, text) for readable files under root.
+
+    Walks root with _walk_files so IGNORED_DIRS are respected at any
+    depth. Files larger than SEARCH_MAX_FILE_BYTES and files that
+    cannot be read are recorded in skipped_files ({"file", "reason"})
+    and never yielded, so callers never silently lose files. When
+    include is given, only files satisfying the predicate are read at
+    all.
     """
-    Search text files using a regular expression.
-    """
-    root = _resolve_path(path)
-
-    if not root.exists():
-        return [{"error": f"path does not exist: {path}"}]
-
-    flags = re.IGNORECASE if ignore_case else 0
-
-    try:
-        regex = re.compile(pattern, flags)
-    except re.error as exc:
-        return [{"error": f"Invalid regex: {exc}"}]
-
-    files = [root] if root.is_file() else root.rglob("*")
-
-    results: list[dict[str, Any]] = []
-
-    for file_path in files:
-        if not file_path.is_file():
+    for file_path in _walk_files(root):
+        if include is not None and not include(file_path):
             continue
-
-        # Skip common generated / binary directories.
-        if any(
-            part in {".git", ".venv", "venv", "__pycache__", "node_modules"}
-            for part in file_path.parts
-        ):
-            continue
-
         try:
-            text = file_path.read_text(
-                encoding="utf-8",
-                errors="ignore",
-            )
-        except Exception:
-            continue
-
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if regex.search(line):
-                results.append({
+            if file_path.stat().st_size > SEARCH_MAX_FILE_BYTES:
+                skipped_files.append({
                     "file": str(file_path),
-                    "line": line_number,
-                    "text": line,
+                    "reason": f"file exceeds {SEARCH_MAX_FILE_BYTES} bytes",
                 })
-
-    return results
+                continue
+        except OSError as exc:
+            skipped_files.append({
+                "file": str(file_path),
+                "reason": f"unreadable: {exc}",
+            })
+            continue
+        try:
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            skipped_files.append({
+                "file": str(file_path),
+                "reason": f"unreadable: {exc}",
+            })
+            continue
+        yield file_path, text
 
 
 def search_code(
     query: str,
     path: str = ".",
     extensions: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Search source code for a plain-text query.
+    case_sensitive: bool = False,
+    max_results: int = 200,
+) -> dict[str, Any]:
+    """Search source code files for a plain-text substring.
+
+    The match is a case-insensitive substring search by default;
+    case_sensitive=True makes it exact-case. Extensions are
+    normalized on BOTH sides: the file's suffix and each caller
+    entry are stripped of leading dots and lowercased, so ".py",
+    "py", and "PY" all match a .py file. Empty or invalid entries are
+    dropped; when no usable extension remains the default code
+    extension list is used.
+
+    Returns a success/failure envelope. On success, data is
+    {"matches": [{"file", "line", "text"}], "files_scanned": int,
+    "files_skipped": int, "skipped_files": [{"file", "reason"}],
+    "truncated": bool, "query": str}. "text" is the full matched
+    line, unstripped. matches are sorted by (file, line) and capped
+    at max_results; when the cap is hit truncated is True. Files
+    larger than SEARCH_MAX_FILE_BYTES or unreadable files are
+    recorded in skipped_files with a reason and counted in
+    files_skipped. IGNORED_DIRS are respected during the recursive
+    walk; the requested root itself is never filtered.
     """
     root = _resolve_path(path)
 
-    if not root.exists():
-        return [{"error": f"path does not exist: {path}"}]
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    if extensions is None:
-        extensions = [
-            ".py",
-            ".js",
-            ".ts",
-            ".tsx",
-            ".jsx",
-            ".java",
-            ".c",
-            ".cpp",
-            ".h",
-            ".hpp",
-            ".go",
-            ".rs",
-            ".cs",
-            ".sql",
-            ".html",
-            ".css",
-        ]
+    wanted = _search_normalize_extensions(extensions)
+    if not wanted:
+        wanted = _search_normalize_extensions(
+            list(SEARCH_DEFAULT_EXTENSIONS)
+        )
 
-    query_lower = query.lower()
+    wanted_set = set(wanted)
+    needle = query if case_sensitive else query.lower()
 
-    files = [root] if root.is_file() else root.rglob("*")
+    matches: list[dict[str, Any]] = []
+    files_scanned = 0
+    skipped_files: list[dict[str, Any]] = []
+    truncated = False
 
-    results: list[dict[str, Any]] = []
-
-    for file_path in files:
-        if not file_path.is_file():
-            continue
-
-        if extensions and file_path.suffix.lower() not in extensions:
-            continue
-
-        if any(
-            part in {".git", ".venv", "venv", "__pycache__", "node_modules"}
-            for part in file_path.parts
-        ):
-            continue
-
-        try:
-            lines = file_path.read_text(
-                encoding="utf-8",
-                errors="ignore",
-            ).splitlines()
-        except Exception:
-            continue
-
-        for line_number, line in enumerate(lines, start=1):
-            if query_lower in line.lower():
-                results.append({
+    for file_path, text in _search_iter_readable(
+        root,
+        skipped_files,
+        include=lambda candidate: (
+            candidate.suffix.lstrip(".").lower() in wanted_set
+        ),
+    ):
+        files_scanned += 1
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            haystack = line if case_sensitive else line.lower()
+            if needle in haystack:
+                matches.append({
                     "file": str(file_path),
                     "line": line_number,
-                    "text": line.strip(),
+                    "text": line,
                 })
 
-    return results
+    matches.sort(key=lambda match: (match["file"], match["line"]))
+    skipped_files.sort(key=lambda entry: entry["file"])
+
+    if len(matches) > max_results:
+        matches = matches[:max_results]
+        truncated = True
+
+    return success(
+        {
+            "matches": matches,
+            "files_scanned": files_scanned,
+            "files_skipped": len(skipped_files),
+            "skipped_files": skipped_files,
+            "truncated": truncated,
+            "query": query,
+        },
+        message=(
+            f"Results truncated at {max_results}"
+            if truncated
+            else f"Found {len(matches)} matches in {files_scanned} files"
+        ),
+    )
+
+
+def grep(
+    pattern: str,
+    path: str = ".",
+    ignore_case: bool = False,
+    max_results: int = 200,
+) -> dict[str, Any]:
+    """Search files under path for lines matching a regular expression.
+
+    No extension filter is applied (grep searches every file type).
+
+    Returns a success/failure envelope. On success, data is
+    {"matches": [{"file", "line", "text"}], "files_scanned": int,
+    "files_skipped": int, "skipped_files": [{"file", "reason"}],
+    "truncated": bool, "pattern": str}. "text" is the full matched
+    line, unstripped. matches are sorted by (file, line) and capped
+    at max_results; when the cap is hit truncated is True. An invalid
+    regex returns a failure with the regex error message. Files
+    larger than SEARCH_MAX_FILE_BYTES or unreadable files are
+    recorded in skipped_files with a reason. IGNORED_DIRS are
+    respected during the recursive walk; the requested root itself is
+    never filtered.
+    """
+    root = _resolve_path(path)
+
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
+
+    flags = re.IGNORECASE if ignore_case else 0
+
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as exc:
+        return failure(f"Invalid regex: {exc}")
+
+    matches: list[dict[str, Any]] = []
+    files_scanned = 0
+    skipped_files: list[dict[str, Any]] = []
+    truncated = False
+
+    for file_path, text in _search_iter_readable(root, skipped_files):
+        files_scanned += 1
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if regex.search(line):
+                matches.append({
+                    "file": str(file_path),
+                    "line": line_number,
+                    "text": line,
+                })
+
+    matches.sort(key=lambda match: (match["file"], match["line"]))
+    skipped_files.sort(key=lambda entry: entry["file"])
+
+    if len(matches) > max_results:
+        matches = matches[:max_results]
+        truncated = True
+
+    return success(
+        {
+            "matches": matches,
+            "files_scanned": files_scanned,
+            "files_skipped": len(skipped_files),
+            "skipped_files": skipped_files,
+            "truncated": truncated,
+            "pattern": pattern,
+        },
+        message=(
+            f"Results truncated at {max_results}"
+            if truncated
+            else f"Found {len(matches)} matches in {files_scanned} files"
+        ),
+    )
+
+
+def find_files(
+    pattern: str,
+    path: str = ".",
+) -> dict[str, Any]:
+    """Find files under path using a pathlib glob pattern.
+
+    Results are filtered so that no result path passes through an
+    ignored directory (IGNORED_DIRS) at any level; the requested root
+    itself is never filtered.
+
+    Args:
+        pattern: Glob pattern, e.g. "*.py", "**/*.py", "test_*.py".
+        path: Directory to search. Defaults to the current directory.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"files": [str, ...], "path": str, "count": int} where files
+        are absolute paths sorted case-insensitively for
+        deterministic ordering. A missing or invalid path, or an
+        empty pattern, returns a failure.
+    """
+    root = _resolve_path(path)
+
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
+
+    if not pattern or not pattern.strip():
+        return failure("pattern must not be empty")
+
+    try:
+        found = [
+            item
+            for item in root.glob(pattern)
+            if item.is_file()
+        ]
+    except Exception as exc:
+        return failure(f"Failed to search files: {exc}")
+
+    filtered = [
+        item
+        for item in found
+        if not any(
+            part in IGNORED_DIRS
+            for part in item.relative_to(root).parts
+        )
+    ]
+
+    files = sorted(
+        (str(item) for item in filtered),
+        key=lambda file_path: file_path.lower(),
+    )
+
+    return success(
+        {
+            "files": files,
+            "path": str(root),
+            "count": len(files),
+        },
+        message=f"Found {len(files)} files",
+    )
 
 
 def find_symbol(
     symbol: str,
     path: str = ".",
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
+    """Find Python function and class definitions named symbol.
+
+    IMPORTANT: this is an AST-based search over .py files and matches
+    FUNCTION and CLASS definitions ONLY (ast.FunctionDef,
+    ast.AsyncFunctionDef, ast.ClassDef) with an exact name match.
+    Variables, assignments, and other symbols are NOT matched.
+
+    Returns a success/failure envelope. On success, data is
+    {"matches": [{"file", "line", "name", "kind"}], "files_scanned":
+    int, "files_skipped": int, "skipped_files": [{"file", "reason"}]}
+    where kind is "function", "async_function", or "class". matches
+    are sorted by (file, line). Files that fail to parse or cannot be
+    read are recorded in skipped_files with a reason. IGNORED_DIRS
+    are respected during the recursive walk; the requested root
+    itself is never filtered. An empty symbol returns a failure.
     """
-    Find Python functions/classes/variables matching a symbol name.
-    """
+    if not symbol or not symbol.strip():
+        return failure("symbol must not be empty")
+
     root = _resolve_path(path)
 
-    if not root.exists():
-        return [{"error": f"path does not exist: {path}"}]
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    files = [root] if root.is_file() else root.rglob("*.py")
+    matches: list[dict[str, Any]] = []
+    files_scanned = 0
+    skipped_files: list[dict[str, Any]] = []
 
-    results: list[dict[str, Any]] = []
-
-    for file_path in files:
-        if not file_path.is_file():
+    for file_path in _walk_files(root):
+        if file_path.suffix.lower() != ".py":
             continue
-
         try:
             source = file_path.read_text(encoding="utf-8")
             tree = ast.parse(source)
-        except (SyntaxError, UnicodeDecodeError):
+        except SyntaxError as exc:
+            skipped_files.append({
+                "file": str(file_path),
+                "reason": f"failed to parse: {exc}",
+            })
+            continue
+        except UnicodeDecodeError:
+            skipped_files.append({
+                "file": str(file_path),
+                "reason": "file is not UTF-8 text",
+            })
+            continue
+        except OSError as exc:
+            skipped_files.append({
+                "file": str(file_path),
+                "reason": f"unreadable: {exc}",
+            })
             continue
 
+        files_scanned += 1
         for node in ast.walk(tree):
             if isinstance(
                 node,
@@ -921,49 +1131,106 @@ def find_symbol(
                     ast.ClassDef,
                 ),
             ) and node.name == symbol:
-
-                results.append({
+                matches.append({
                     "file": str(file_path),
                     "line": node.lineno,
-                    "type": type(node).__name__,
                     "name": node.name,
+                    "kind": _search_kind(node),
                 })
 
-    return results
+    matches.sort(key=lambda match: (match["file"], match["line"]))
+    skipped_files.sort(key=lambda entry: entry["file"])
+
+    return success(
+        {
+            "matches": matches,
+            "files_scanned": files_scanned,
+            "files_skipped": len(skipped_files),
+            "skipped_files": skipped_files,
+        },
+        message=f"Found {len(matches)} definitions named {symbol}",
+    )
 
 
 def find_references(
     symbol: str,
     path: str = ".",
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
+    """Find textual references to symbol under path.
+
+    IMPORTANT: this is a TEXTUAL (regex word-boundary) search, NOT
+    semantic reference analysis. It finds every line whose text
+    contains the symbol as a whole word, including comments, strings,
+    and the definition itself; it does not resolve imports or
+    distinguish usage from naming.
+
+    Returns a success/failure envelope. On success, data is
+    {"matches": [{"file", "line", "text"}], "files_scanned": int,
+    "files_skipped": int, "skipped_files": [{"file", "reason"}],
+    "truncated": bool, "symbol": str}. matches are sorted by
+    (file, line). IGNORED_DIRS are respected during the recursive
+    walk (generated directories such as draft_venv are skipped); the
+    requested root itself is never filtered. An empty symbol returns
+    a failure.
     """
-    Find textual references to a symbol.
-    """
-    return grep(
-        rf"\b{re.escape(symbol)}\b",
-        path,
-    )
+    if not symbol or not symbol.strip():
+        return failure("symbol must not be empty")
+
+    result = grep(rf"\b{re.escape(symbol)}\b", path)
+
+    if not result["success"]:
+        return result
+
+    data = dict(result["data"])
+    data["symbol"] = data.pop("pattern")
+
+    return success(data, message=result["message"])
 
 
-def get_file_symbols(path: str) -> list[dict[str, Any]]:
-    """
-    Return top-level Python classes and functions in a file.
+def get_file_symbols(path: str) -> dict[str, Any]:
+    """Return top-level (module-level) Python definitions in a file.
+
+    Only .py files are supported; any other extension returns a
+    failure. Only top-level ast.FunctionDef, ast.AsyncFunctionDef,
+    and ast.ClassDef nodes in source order are returned; definitions
+    nested inside classes or functions are not included.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "symbols": [{"name", "kind", "line",
+        "end_line"}], "count": int} where kind is "function",
+        "async_function", or "class". A missing file returns a
+        failure; a parse error returns a failure with the SyntaxError
+        details (line and column when available).
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return [{"error": f"file does not exist: {path}"}]
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    if file_path.suffix != ".py":
-        return [{"error": "get_file_symbols currently supports Python files only."}]
+    if file_path.suffix.lower() != ".py":
+        return failure("only .py files supported")
 
     try:
         source = file_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
-    except Exception as exc:
-        return [{"error": str(exc)}]
+    except SyntaxError as exc:
+        return failure(
+            f"Failed to parse Python file: {exc}",
+            data={
+                "path": str(file_path),
+                "line": exc.lineno,
+                "column": exc.offset,
+            },
+        )
+    except UnicodeDecodeError:
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
 
-    results = []
+    symbols: list[dict[str, Any]] = []
 
     for node in tree.body:
         if isinstance(
@@ -974,13 +1241,21 @@ def get_file_symbols(path: str) -> list[dict[str, Any]]:
                 ast.ClassDef,
             ),
         ):
-            results.append({
+            symbols.append({
                 "name": node.name,
-                "type": type(node).__name__,
+                "kind": _search_kind(node),
                 "line": node.lineno,
+                "end_line": node.end_lineno,
             })
 
-    return results
+    return success(
+        {
+            "path": str(file_path),
+            "symbols": symbols,
+            "count": len(symbols),
+        },
+        message=f"Found {len(symbols)} top-level symbols",
+    )
 
 
 # ============================================================
