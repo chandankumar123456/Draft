@@ -1188,18 +1188,106 @@ def delete_lines(
 # 4. EXECUTION
 # ============================================================
 
+EXEC_MAX_OUTPUT_CHARS = 20_000
+EXEC_TRUNCATION_MARKER = "\n...[truncated]"
+
+
+def _is_truncated(stream: str) -> bool:
+    """Return True if stream carries the truncation marker."""
+    return stream.endswith(EXEC_TRUNCATION_MARKER)
+
+
+def _resolved_cwd(cwd: str | None) -> str:
+    """Resolve cwd exactly as _run_subprocess does, for reporting.
+
+    None resolves to the project root; other values are expanded and
+    made absolute. The result is only informational; _run_subprocess
+    performs the authoritative validation.
+    """
+    if cwd is None:
+        return str(_resolve_path("."))
+    return str(Path(cwd).expanduser().resolve())
+
+
+def _execution_envelope(
+    result: dict[str, Any],
+    data: dict[str, Any],
+    success_message: str,
+    failed_message: str,
+    timeout_message: str,
+) -> dict[str, Any]:
+    """Wrap a _run_subprocess result dict into the result envelope.
+
+    A completed run with a non-zero exit code produces the message
+    "{failed_message} (exit code N)". Command-level errors (invalid
+    working directory, command not found) surface the error detail as
+    both the error and the message. On timeout, success is False and
+    timeout_message is used. data is always attached to the envelope.
+    """
+    if result["success"]:
+        return success(data, message=success_message)
+
+    if result["timed_out"]:
+        return failure(timeout_message, data=data, message=timeout_message)
+
+    if result["error"]:
+        return failure(result["error"], data=data, message=result["error"])
+
+    message = f"{failed_message} (exit code {result['returncode']})"
+    return failure(message, data=data, message=message)
+
+
 def run_command(
     cmd: str,
     cwd: str | None = None,
     timeout: int = 30,
 ) -> dict[str, Any]:
+    """Executes an arbitrary shell command. Shell execution is inherently
+    unsafe and should only be used when the command is trusted and
+    necessary.
+
+    Args:
+        cmd: The shell command string to execute (shell=True).
+        cwd: Working directory; None means the project root.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        A success/failure envelope. On success, data is {"command",
+        "cwd" (resolved), "returncode", "stdout", "stderr",
+        "timed_out", "truncated_stdout", "truncated_stderr"}; stdout
+        and stderr are capped at EXEC_MAX_OUTPUT_CHARS characters and
+        the truncated flags report whether the cap was hit. success is
+        True only when the command ran and exited with code 0; timeout
+        and failures still return the envelope with success False and
+        everything captured in data.
     """
-    Execute a shell command.
-    """
-    return _run_subprocess(
+    if not cmd or not cmd.strip():
+        return failure("Command must not be empty")
+
+    result = _run_subprocess(
         cmd,
         cwd=cwd,
         timeout=timeout,
+        max_output_chars=EXEC_MAX_OUTPUT_CHARS,
+    )
+
+    data = {
+        "command": cmd,
+        "cwd": _resolved_cwd(cwd),
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated_stdout": _is_truncated(result["stdout"]),
+        "truncated_stderr": _is_truncated(result["stderr"]),
+    }
+
+    return _execution_envelope(
+        result,
+        data,
+        success_message="Command completed successfully",
+        failed_message="Command failed",
+        timeout_message=f"Command timed out after {timeout}s",
     )
 
 
@@ -1208,26 +1296,57 @@ def run_python(
     args: list[str] | None = None,
     timeout: int = 30,
 ) -> dict[str, Any]:
-    """
-    Execute a Python file using the current Python interpreter.
+    """Execute a Python file using the current Python interpreter.
+
+    Args:
+        file: Path to the Python script to run.
+        args: Optional command-line arguments passed to the script.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        A success/failure envelope. On success, data is {"file",
+        "args", "returncode", "stdout", "stderr", "timed_out",
+        "truncated_stdout", "truncated_stderr", "python"} (the
+        interpreter path). success is True only when the script ran
+        and exited with code 0; the file must exist.
     """
     file_path = _resolve_path(file)
 
-    if not file_path.exists():
-        return {
-            "success": False,
-            "error": f"Python file does not exist: {file}",
-        }
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
     command = [sys.executable, str(file_path)]
 
     if args:
         command.extend(args)
 
-    return _run_subprocess(
+    result = _run_subprocess(
         command,
         cwd=file_path.parent,
         timeout=timeout,
+        max_output_chars=EXEC_MAX_OUTPUT_CHARS,
+    )
+
+    data = {
+        "file": str(file_path),
+        "args": list(args) if args else [],
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated_stdout": _is_truncated(result["stdout"]),
+        "truncated_stderr": _is_truncated(result["stderr"]),
+        "python": sys.executable,
+    }
+
+    return _execution_envelope(
+        result,
+        data,
+        success_message="Python script completed successfully",
+        failed_message="Python script failed",
+        timeout_message=f"Python script timed out after {timeout}s",
     )
 
 
@@ -1236,47 +1355,112 @@ def run_tests(
     cwd: str | None = None,
     timeout: int = 120,
 ) -> dict[str, Any]:
+    """Run the project's test command.
+
+    The command is a full shell string (shell=True), so custom
+    invocations such as "pytest -q tests/" work.
+
+    Args:
+        cmd: The test command to execute.
+        cwd: Working directory; None means the project root.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        A success/failure envelope. On success, data is {"command",
+        "cwd", "returncode", "stdout", "stderr", "timed_out",
+        "truncated_stdout", "truncated_stderr", "passed"}. The message
+        is "Tests passed", "Tests failed (exit code N)" or "Tests
+        timed out" accordingly.
     """
-    Run the project's test command.
-    """
-    return _run_subprocess(
+    result = _run_subprocess(
         cmd,
         cwd=cwd,
         timeout=timeout,
+        max_output_chars=EXEC_MAX_OUTPUT_CHARS,
+    )
+
+    data = {
+        "command": cmd,
+        "cwd": _resolved_cwd(cwd),
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated_stdout": _is_truncated(result["stdout"]),
+        "truncated_stderr": _is_truncated(result["stderr"]),
+        "passed": result["returncode"] == 0,
+    }
+
+    return _execution_envelope(
+        result,
+        data,
+        success_message="Tests passed",
+        failed_message="Tests failed",
+        timeout_message="Tests timed out",
     )
 
 
 def check_syntax(
     path: str,
 ) -> dict[str, Any]:
-    """
-    Check Python syntax without executing the file.
+    """Check Python syntax without executing the file.
+
+    The file is parsed with ast.parse directly; no subprocess is
+    involved.
+
+    Args:
+        path: Path to the Python file to check.
+
+    Returns:
+        A success/failure envelope. On valid syntax, data is
+        {"path", "valid": True, "line_count": int}. On a SyntaxError,
+        success is False and data is {"path", "valid": False, "error":
+        str(e.msg), "error_text": str(e)} plus "line" and "column"
+        when available.
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return {
-            "success": False,
-            "error": f"File does not exist: {path}",
-        }
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
     try:
         source = file_path.read_text(encoding="utf-8")
-        ast.parse(source)
+    except (OSError, UnicodeDecodeError) as exc:
+        return failure(f"Failed to read file: {exc}")
 
-        return {
-            "success": True,
-            "file": str(file_path),
-        }
-
+    try:
+        ast.parse(source, filename=str(file_path))
     except SyntaxError as exc:
-        return {
-            "success": False,
-            "file": str(file_path),
-            "error": str(exc),
-            "line": exc.lineno,
-            "column": exc.offset,
+        data: dict[str, Any] = {
+            "path": str(file_path),
+            "valid": False,
+            "error": str(exc.msg),
+            "error_text": str(exc),
         }
+        if exc.lineno is not None:
+            data["line"] = exc.lineno
+        if exc.offset is not None:
+            data["column"] = exc.offset
+        message = f"Syntax error: {exc.msg}"
+        if exc.lineno is not None:
+            message += f" (line {exc.lineno}"
+            if exc.offset is not None:
+                message += f", column {exc.offset}"
+            message += ")"
+        return failure(str(exc.msg), data=data, message=message)
+    except Exception as exc:
+        return failure(f"Failed to check syntax: {exc}")
+
+    return success(
+        {
+            "path": str(file_path),
+            "valid": True,
+            "line_count": len(source.splitlines()),
+        },
+        message="Syntax OK",
+    )
 
 
 def lint_project(
@@ -1284,13 +1468,47 @@ def lint_project(
     cwd: str | None = None,
     timeout: int = 120,
 ) -> dict[str, Any]:
+    """Run the project's linting command.
+
+    The command is a full shell string (shell=True), so custom
+    invocations such as "ruff check . --fix" work.
+
+    Args:
+        cmd: The lint command to execute.
+        cwd: Working directory; None means the project root.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        A success/failure envelope. On success, data is {"command",
+        "cwd", "returncode", "stdout", "stderr", "timed_out",
+        "truncated_stdout", "truncated_stderr"}. success is True only
+        when lint exited with code 0. The message is "Lint passed",
+        "Lint issues found (exit code N)" or "Lint timed out".
     """
-    Run the project's linting command.
-    """
-    return _run_subprocess(
+    result = _run_subprocess(
         cmd,
         cwd=cwd,
         timeout=timeout,
+        max_output_chars=EXEC_MAX_OUTPUT_CHARS,
+    )
+
+    data = {
+        "command": cmd,
+        "cwd": _resolved_cwd(cwd),
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated_stdout": _is_truncated(result["stdout"]),
+        "truncated_stderr": _is_truncated(result["stderr"]),
+    }
+
+    return _execution_envelope(
+        result,
+        data,
+        success_message="Lint passed",
+        failed_message="Lint issues found",
+        timeout_message="Lint timed out",
     )
 
 
@@ -1299,13 +1517,48 @@ def typecheck_project(
     cwd: str | None = None,
     timeout: int = 120,
 ) -> dict[str, Any]:
+    """Run the project's type-checking command.
+
+    The command is a full shell string (shell=True), so custom
+    invocations such as "mypy src/" work.
+
+    Args:
+        cmd: The type-check command to execute.
+        cwd: Working directory; None means the project root.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        A success/failure envelope. On success, data is {"command",
+        "cwd", "returncode", "stdout", "stderr", "timed_out",
+        "truncated_stdout", "truncated_stderr"}. success is True only
+        when type checking exited with code 0. The message is
+        "Typecheck passed", "Typecheck issues found (exit code N)" or
+        "Typecheck timed out".
     """
-    Run the project's type-checking command.
-    """
-    return _run_subprocess(
+    result = _run_subprocess(
         cmd,
         cwd=cwd,
         timeout=timeout,
+        max_output_chars=EXEC_MAX_OUTPUT_CHARS,
+    )
+
+    data = {
+        "command": cmd,
+        "cwd": _resolved_cwd(cwd),
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated_stdout": _is_truncated(result["stdout"]),
+        "truncated_stderr": _is_truncated(result["stderr"]),
+    }
+
+    return _execution_envelope(
+        result,
+        data,
+        success_message="Typecheck passed",
+        failed_message="Typecheck issues found",
+        timeout_message="Typecheck timed out",
     )
 
 
