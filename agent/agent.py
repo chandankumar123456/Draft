@@ -8,14 +8,18 @@ import os
 import json
 load_dotenv()
 
-from tools.tools import list_files_tool
+from tools.tools import ALL_TOOLS
+from tools.registry import TOOL_REGISTRY
 
 agent = project_client.agents.create_version(
     agent_name="Draft-Main-Agent",
     definition=PromptAgentDefinition(
         model = os.getenv("MODEL_DEPLOYMENT"),
         instructions=instructions,
-        tools=[WebSearchTool(), list_files_tool]
+        tools=[
+            WebSearchTool(), 
+            *ALL_TOOLS
+        ]
     )
 )
 
@@ -64,23 +68,37 @@ while True:
                     
                     
     for item in response.output:
-        # print("\n", item)
-        if item.type == "function_call":
-            # retrieve the matching function
-            function_name = item.name
-            result = None
-            if item.name == "list_files":
-                from tools.functions import list_files
-                result = list_files(**json.loads(item.arguments))    
-                
-            # append the output text
-            input_list.append(
-                FunctionCallOutput(
-                    type = "function_call_output",
-                    call_id=item.call_id,
-                    output = json.dumps(result)
-                )
+
+        if item.type != "function_call":
+            continue
+
+        function = TOOL_REGISTRY.get(item.name)
+
+        if function is None:
+            result = {
+                "error": f"Unknown tool: {item.name}"
+            }
+
+        else:
+            try:
+                arguments = json.loads(item.arguments)
+
+                result = function(**arguments)
+
+            except Exception as exc:
+                result = {
+                    "error": (
+                        f"Tool '{item.name}' failed: {str(exc)}"
+                    )
+                }
+
+        input_list.append(
+            FunctionCallOutput(
+                type="function_call_output",
+                call_id=item.call_id,
+                output=json.dumps(result),
             )
+        )
             
             
             # ---- delete below later
