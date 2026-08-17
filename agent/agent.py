@@ -23,6 +23,14 @@ agent = project_client.agents.create_version(
 conversation = openai_client.conversations.create()
 input_list:ResponseInputParam = []
 
+# ----- delete below later
+# print("\n=== ResponseInputParam ===")
+# print("Type:", type(input_list))
+# print("Value:", input_list)
+# print("Is list:", isinstance(input_list, list))
+# print()
+# ----- delete above later
+
 while True:
     user_input = input("Enter a prompt for the Draft-Main-Agent. use 'quit' to exit.\nUser: ").strip()
     if user_input.strip() == "quit":
@@ -73,6 +81,19 @@ while True:
                     output = json.dumps(result)
                 )
             )
+            
+            
+            # ---- delete below later
+            # print("\n=== FUNCTION CALL ===")
+            # print("Item type:", item.type)
+            # print("Function name:", item.name)
+            # print("Call ID:", item.call_id)
+            # print("Arguments:", item.arguments)
+            # print("Parsed arguments:", json.loads(item.arguments))
+            # print("Function result:", result)
+            # print("Result type:", type(result))
+            # print("input list: ", input_list)
+            # ---- delete above later
 
     if input_list:
         response = openai_client.responses.create(
