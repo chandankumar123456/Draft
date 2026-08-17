@@ -1484,15 +1484,86 @@ def get_project_metadata(
 # 7. GIT
 # ============================================================
 
+GIT_TIMEOUT = 30
+GIT_BINARY = "git"
+
+
+def _git_envelope(
+    result: dict[str, Any],
+    command: list[str] | str,
+    cwd: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Wrap a _run_subprocess detail dict into a git tool result envelope.
+
+    data always contains the common subprocess block — command, cwd
+    (resolved), returncode, stdout, stderr, timed_out,
+    truncated_stdout, truncated_stderr — plus any tool-specific extra
+    fields, so every git tool exposes the same core data. success is
+    True iff git ran and exited 0; informational stderr from an
+    otherwise successful run (e.g. git switch progress messages) is
+    never treated as failure. On failure error is the trimmed stderr
+    or "git exited with code <returncode>" and message is None.
+    """
+    data: dict[str, Any] = {
+        "command": command,
+        "cwd": cwd,
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated_stdout": result["stdout"].endswith("\n...[truncated]"),
+        "truncated_stderr": result["stderr"].endswith("\n...[truncated]"),
+        **extra,
+    }
+    if result["success"]:
+        return success(data)
+    return failure(
+        result["stderr"].strip()
+        or f"git exited with code {result['returncode']}",
+        data=data,
+        message=None,
+    )
+
+
 def git_status(
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Return Git status for the working tree.
+
+    Runs ["git", "status", "--short", "--branch"]. With cwd="." (the
+    default) the command runs at the repository root. Read-only: never
+    modifies the repository. data adds {"branch": str|None, "clean":
+    bool}; branch is parsed from the "## <branch>" summary line
+    ("HEAD (no branch)" when detached) and clean is True when no
+    change lines are present.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Return Git status information.
-    """
-    return _run_subprocess(
-        ["git", "status", "--short", "--branch"],
-        cwd=cwd,
+    command = [GIT_BINARY, "status", "--short", "--branch"]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
+    )
+
+    branch: str | None = None
+    clean = True
+    for line in result["stdout"].splitlines():
+        if line.startswith("## "):
+            branch = line[3:].strip()
+        else:
+            clean = False
+
+    return _git_envelope(
+        result,
+        command,
+        cwd_resolved,
+        branch=branch,
+        clean=clean,
     )
 
 
@@ -1500,36 +1571,74 @@ def git_diff(
     path: str | None = None,
     cwd: str = ".",
 ) -> dict[str, Any]:
-    """
-    Show current unstaged Git diff.
-    """
-    command = ["git", "diff"]
+    """Show the current unstaged diff.
 
+    Runs ["git", "diff"] with ["--", path] appended when a path is
+    given. With cwd="." (the default) the command runs at the
+    repository root. Read-only: never modifies the repository. data
+    adds {"path": str|None} — the path argument as passed.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
+    """
+    command = [GIT_BINARY, "diff"]
     if path:
-        command.append(path)
+        command += ["--", path]
 
-    return _run_subprocess(
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
         command,
-        cwd=cwd,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
     )
+
+    return _git_envelope(result, command, cwd_resolved, path=path)
 
 
 def git_log(
     n: int = 10,
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Show recent commit history.
+
+    Runs ["git", "log", "-n", <n>, "--oneline", "--decorate"]. With
+    cwd="." (the default) the command runs at the repository root.
+    Read-only: never modifies the repository. data adds {"entries":
+    [commit line, ...], "count": int}; entries are the non-empty
+    stdout lines and count is their number.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Return recent Git commits.
-    """
-    return _run_subprocess(
-        [
-            "git",
-            "log",
-            f"-{n}",
-            "--oneline",
-            "--decorate",
-        ],
-        cwd=cwd,
+    command = [
+        GIT_BINARY,
+        "log",
+        "-n",
+        str(n),
+        "--oneline",
+        "--decorate",
+    ]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
+    )
+
+    entries = [
+        line
+        for line in result["stdout"].splitlines()
+        if line.strip()
+    ]
+
+    return _git_envelope(
+        result,
+        command,
+        cwd_resolved,
+        entries=entries,
+        count=len(entries),
     )
 
 
@@ -1537,24 +1646,69 @@ def git_show(
     commit: str = "HEAD",
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Show a specific commit.
+
+    Runs ["git", "show", <commit>]. With cwd="." (the default) the
+    command runs at the repository root. Read-only: never modifies the
+    repository. Unknown commit references fail with git's error. data
+    adds {"commit": str} — the commit reference as passed.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Show a specific Git commit.
-    """
-    return _run_subprocess(
-        ["git", "show", commit],
-        cwd=cwd,
+    command = [GIT_BINARY, "show", commit]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
     )
+
+    return _git_envelope(result, command, cwd_resolved, commit=commit)
 
 
 def git_branch(
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """List local branches.
+
+    Runs ["git", "branch", "--list"]. With cwd="." (the default) the
+    command runs at the repository root. Read-only: never modifies the
+    repository. data adds {"branches": [name, ...], "current":
+    str|None}; branches are the non-empty stdout lines stripped (the
+    current branch's entry keeps git's "* " marker) and current is the
+    branch marked with "*", or None when detached.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    List local Git branches.
-    """
-    return _run_subprocess(
-        ["git", "branch", "--list"],
-        cwd=cwd,
+    command = [GIT_BINARY, "branch", "--list"]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
+    )
+
+    branches = [
+        line.strip()
+        for line in result["stdout"].splitlines()
+        if line.strip()
+    ]
+    current: str | None = None
+    for line in branches:
+        if line.startswith("*"):
+            current = line.lstrip("*").strip()
+            break
+
+    return _git_envelope(
+        result,
+        command,
+        cwd_resolved,
+        branches=branches,
+        current=current,
     )
 
 
@@ -1562,81 +1716,184 @@ def git_branch_create(
     name: str,
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Create a new branch at the current HEAD. Does not switch to it.
+
+    Runs ["git", "branch", <name>] — plain branch creation, no force,
+    so an existing branch name fails with git's error. With cwd="."
+    (the default) the command runs at the repository root. A blank
+    name fails with "Branch name must not be empty" before any
+    subprocess runs. data adds {"branch": str} — the name as passed.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Create a new Git branch.
-    """
-    return _run_subprocess(
-        ["git", "branch", name],
-        cwd=cwd,
+    if not name.strip():
+        return failure("Branch name must not be empty")
+
+    command = [GIT_BINARY, "branch", name]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
     )
+
+    return _git_envelope(result, command, cwd_resolved, branch=name)
 
 
 def git_branch_switch(
     name: str,
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Switch to an existing branch.
+
+    Runs plain ["git", "switch", <name>] — never with -f, so
+    uncommitted changes that would be overwritten make git refuse.
+    With cwd="." (the default) the command runs at the repository
+    root. A blank name fails with "Branch name must not be empty".
+    git switch reports progress on stderr even when it succeeds; a
+    successful run (exit 0) is still a success. data adds {"branch":
+    str} — the name as passed.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Switch to an existing Git branch.
-    """
-    return _run_subprocess(
-        ["git", "switch", name],
-        cwd=cwd,
+    if not name.strip():
+        return failure("Branch name must not be empty")
+
+    command = [GIT_BINARY, "switch", name]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
     )
+
+    return _git_envelope(result, command, cwd_resolved, branch=name)
 
 
 def git_add(
     paths: list[str],
     cwd: str = ".",
 ) -> dict[str, Any]:
-    """
-    Stage files for commit.
+    """Stage the given paths for commit.
+
+    Runs ["git", "add", <paths...>]. With cwd="." (the default) the
+    command runs at the repository root. Only the given paths are
+    staged; nothing else. An empty paths list fails with "No paths
+    given" before any subprocess runs. data adds {"paths":
+    list[str]} — the paths as passed.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
     if not paths:
-        return {
-            "success": False,
-            "error": "No paths provided.",
-        }
+        return failure("No paths given")
 
-    return _run_subprocess(
-        ["git", "add", *paths],
-        cwd=cwd,
+    command = [GIT_BINARY, "add", *paths]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
     )
+
+    return _git_envelope(result, command, cwd_resolved, paths=paths)
 
 
 def git_commit(
     message: str,
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Create a commit with the given message.
+
+    Runs git commit -m with the given message. Does NOT stage changes
+    (run git_add first). Does not amend or force. With cwd="." (the
+    default) the command runs at the repository root. A blank message
+    fails with "Commit message must not be empty" before any
+    subprocess runs. data adds {"message": str} — the message as
+    passed.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Create a Git commit.
-    """
-    return _run_subprocess(
-        ["git", "commit", "-m", message],
-        cwd=cwd,
+    if not message.strip():
+        return failure("Commit message must not be empty")
+
+    command = [GIT_BINARY, "commit", "-m", message]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
     )
+
+    return _git_envelope(result, command, cwd_resolved, message=message)
 
 
 def git_stash(
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Stash uncommitted changes.
+
+    Runs ["git", "stash"] (tracked changes; untracked files are not
+    stashed by default). With cwd="." (the default) the command runs
+    at the repository root. Does not pop, apply, or drop anything on
+    its own. data adds {"stashed": bool} — True iff git ran and
+    exited 0.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Stash current changes.
-    """
-    return _run_subprocess(
-        ["git", "stash"],
-        cwd=cwd,
+    command = [GIT_BINARY, "stash"]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
+    )
+
+    return _git_envelope(
+        result,
+        command,
+        cwd_resolved,
+        stashed=result["success"],
     )
 
 
 def git_stash_pop(
     cwd: str = ".",
 ) -> dict[str, Any]:
+    """Restore the most recent stash.
+
+    Runs ["git", "stash", "pop"] — applies the most recent stash entry
+    and drops it. With cwd="." (the default) the command runs at the
+    repository root. With no stash to pop git exits non-zero and the
+    call fails with git's error. data adds {"popped": bool} — True iff
+    git ran and exited 0.
+
+    Returns:
+        A success/failure envelope; success is True iff git ran and
+        exited 0.
     """
-    Restore the most recent Git stash.
-    """
-    return _run_subprocess(
-        ["git", "stash", "pop"],
-        cwd=cwd,
+    command = [GIT_BINARY, "stash", "pop"]
+    cwd_resolved = str(_resolve_path(cwd))
+    result = _run_subprocess(
+        command,
+        cwd=cwd_resolved,
+        timeout=GIT_TIMEOUT,
+    )
+
+    return _git_envelope(
+        result,
+        command,
+        cwd_resolved,
+        popped=result["success"],
     )
 
 
