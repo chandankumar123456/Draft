@@ -1,6 +1,4 @@
 Plan/*.png
 /draft_venv
 .env
-
-__init__.py
 __pycache__
