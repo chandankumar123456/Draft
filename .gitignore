@@ -3,3 +3,5 @@ Plan/*.png
 .env
 __pycache__
 .superpowers/
+.mypy_cache
+.ruff_cache
