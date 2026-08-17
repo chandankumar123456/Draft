@@ -478,7 +478,7 @@ def write_file(
         file_path.parent.mkdir(parents=True, exist_ok=True)
         encoded = content.encode("utf-8")
         file_path.write_bytes(encoded)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return failure(f"Failed to write file: {exc}")
 
     return success(
