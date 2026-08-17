@@ -213,247 +213,500 @@ def _run_subprocess(
 
 
 # ============================================================
+# ============================================================
 # 1. FILESYSTEM
 # ============================================================
 
+MAX_TREE_ENTRIES = 500
+MAX_READ_CHARS = 50_000
 
-def list_files(directory: str = ".") -> list[str]:
-    """
-    List files and directories inside the given directory.
+
+def list_files(directory: str = ".") -> dict[str, Any]:
+    """List files and directories inside the given directory.
 
     Args:
-        directory: Directory path to inspect. Defaults to the current directory.
+        directory: Directory path to inspect. Defaults to the current
+            directory.
 
     Returns:
-        A list containing the paths of files and directories.
+        A success/failure envelope. On success, data is a sorted list
+        of {"name": str, "type": "file"|"dir"} entries, sorted
+        case-insensitively by name for deterministic ordering.
     """
-    path = Path(directory)
-    
-    if not path.exists():
-        return [f"Error: directory does not exist: {directory}"]
-    
-    if not path.is_dir():
-        return [f"Error: path is not a directory: {directory}"]
-    return [str(item) for item in path.iterdir()]
+    path = _resolve_path(directory)
+
+    try:
+        path = _require_dir(path)
+    except ValueError as exc:
+        return failure(str(exc))
+
+    try:
+        entries = [
+            {
+                "name": item.name,
+                "type": "dir" if item.is_dir() else "file",
+            }
+            for item in path.iterdir()
+        ]
+    except OSError as exc:
+        return failure(f"Failed to list directory: {exc}")
+
+    entries.sort(key=lambda entry: entry["name"].lower())
+
+    return success(
+        entries,
+        message=f"Listed {len(entries)} entries in {path}",
+    )
+
 
 def list_directory_tree(
     path: str = ".",
     depth: int = 3,
-) -> list[str]:
-    """
-    Return a recursive directory tree up to the specified depth.
+) -> dict[str, Any]:
+    """Return a recursive directory tree up to the specified depth.
+
+    Ignored directories (IGNORED_DIRS) are pruned at any depth; the
+    requested root itself is never filtered. Entries are sorted
+    case-insensitively at each level. depth=0 returns only the root.
+
+    Args:
+        path: Directory to walk. Defaults to the current directory.
+        depth: Maximum depth below the root to include. Must be >= 0.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "entries": [{"path": str, "depth": int,
+        "type": "file"|"dir"}, ...], "truncated": bool}. Entries are
+        capped at MAX_TREE_ENTRIES; when the cap is hit truncated is
+        True and the message notes the truncation. Unreadable
+        subdirectories are skipped (their subtrees are omitted).
     """
     root = _resolve_path(path)
 
-    if not root.exists():
-        return [f"Error: path does not exist: {path}"]
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    if not root.is_dir():
-        return [f"Error: path is not a directory: {path}"]
+    if depth < 0:
+        return failure(f"depth must be >= 0, got {depth}")
 
-    results: list[str] = []
+    entries: list[dict[str, Any]] = [
+        {"path": str(root), "depth": 0, "type": "dir"}
+    ]
+    truncated = False
 
-    for current, dirs, files in os.walk(root):
-        current_path = Path(current)
-        relative = current_path.relative_to(root)
+    def walk(current: Path, current_depth: int) -> None:
+        nonlocal truncated
+        if truncated or current_depth >= depth:
+            return
+        try:
+            children = sorted(
+                current.iterdir(),
+                key=lambda child: child.name.lower(),
+            )
+        except OSError:
+            return
+        for child in children:
+            if truncated:
+                return
+            if child.name in IGNORED_DIRS and child.is_dir():
+                continue
+            is_dir = child.is_dir()
+            entries.append(
+                {
+                    "path": str(child),
+                    "depth": current_depth + 1,
+                    "type": "dir" if is_dir else "file",
+                }
+            )
+            if len(entries) >= MAX_TREE_ENTRIES:
+                truncated = True
+                return
+            if is_dir:
+                walk(child, current_depth + 1)
 
-        current_depth = 0 if relative == Path(".") else len(relative.parts)
+    walk(root, 0)
 
-        if current_depth >= depth:
-            dirs[:] = []
-
-        dirs.sort()
-        files.sort()
-
-        indent = "  " * current_depth
-
-        for directory in dirs:
-            results.append(f"{indent}{directory}/")
-
-        for file in files:
-            results.append(f"{indent}{file}")
-
-    return results
+    return success(
+        {
+            "path": str(root),
+            "entries": entries,
+            "truncated": truncated,
+        },
+        message=(
+            f"Tree truncated at {MAX_TREE_ENTRIES} entries"
+            if truncated
+            else f"Listed {len(entries)} entries"
+        ),
+    )
 
 
 def read_file(
     path: str,
     start_line: int | None = None,
     end_line: int | None = None,
-) -> str:
-    """
-    Read a text file, optionally restricting the returned line range.
+) -> dict[str, Any]:
+    """Read a text file, optionally restricting the returned line range.
+
+    The returned content is prefixed with 1-based line numbers in the
+    form "<n>: <text>" per line. Ranges are inclusive; start_line and
+    end_line must be >= 1, end_line >= start_line when both given, and
+    within the file (out-of-range values fail rather than being
+    clamped). Content is capped at MAX_READ_CHARS characters; when the
+    cap is hit truncated is True and the message notes it.
+
+    Args:
+        path: Path to the file to read.
+        start_line: First 1-based line to include.
+        end_line: Last 1-based line to include (inclusive).
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"content": str, "start_line": int, "end_line": int|None,
+        "total_lines": int, "truncated": bool, "path": str}.
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return f"Error: file does not exist: {path}"
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    if not file_path.is_file():
-        return f"Error: path is not a file: {path}"
+    if start_line is not None and start_line < 1:
+        return failure(f"start_line must be >= 1, got {start_line}")
+
+    if end_line is not None and end_line < 1:
+        return failure(f"end_line must be >= 1, got {end_line}")
+
+    if (
+        start_line is not None
+        and end_line is not None
+        and end_line < start_line
+    ):
+        return failure(
+            f"end_line ({end_line}) must be >= start_line ({start_line})"
+        )
 
     try:
         content = file_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return f"Error: file is not a UTF-8 text file: {path}"
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
 
-    if start_line is None and end_line is None:
-        return content
+    total_lines = content.count("\n")
+    if content and not content.endswith("\n"):
+        total_lines += 1
+
+    if start_line is not None and start_line > total_lines:
+        return failure(
+            f"start_line ({start_line}) is beyond the end of the "
+            f"file ({total_lines} lines): {file_path}"
+        )
+
+    if end_line is not None and end_line > total_lines:
+        return failure(
+            f"end_line ({end_line}) is beyond the end of the "
+            f"file ({total_lines} lines): {file_path}"
+        )
+
+    effective_start = 1 if start_line is None else start_line
+    effective_end = total_lines if end_line is None else end_line
 
     lines = content.splitlines()
+    numbered = "\n".join(
+        f"{number}: {line}"
+        for number, line in enumerate(
+            lines[effective_start - 1:effective_end],
+            start=effective_start,
+        )
+    )
 
-    start = 1 if start_line is None else max(start_line, 1)
-    end = len(lines) if end_line is None else min(end_line, len(lines))
+    truncated = False
+    if len(numbered) > MAX_READ_CHARS:
+        numbered = numbered[:MAX_READ_CHARS] + "\n...[truncated]"
+        truncated = True
 
-    if start > end:
-        return ""
-
-    return "\n".join(lines[start - 1:end])
+    return success(
+        {
+            "content": numbered,
+            "start_line": effective_start,
+            "end_line": effective_end,
+            "total_lines": total_lines,
+            "truncated": truncated,
+            "path": str(file_path),
+        },
+        message=(
+            f"Truncated at {MAX_READ_CHARS} characters"
+            if truncated
+            else f"Read {effective_end - effective_start + 1} lines"
+        ),
+    )
 
 
 def write_file(
     path: str,
     content: str,
     overwrite: bool = True,
-) -> str:
-    """
-    Write text content to a file.
+) -> dict[str, Any]:
+    """Write text content to a file, creating parent directories.
+
+    Args:
+        path: Path of the file to write.
+        content: Text content to write (encoded as UTF-8).
+        overwrite: Whether to replace an existing file. When False and
+            the file already exists, the call fails and nothing is
+            written.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "created": bool, "modified": bool,
+        "bytes_written": int} where created means the file did not
+        exist before and modified means an existing file was replaced.
     """
     file_path = _resolve_path(path)
 
-    if file_path.exists() and not overwrite:
-        return f"Error: file already exists: {path}"
+    existed = file_path.exists()
+
+    if existed and not overwrite:
+        return failure(
+            f"File already exists and overwrite is False: {file_path}"
+        )
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding="utf-8")
-        return f"Successfully wrote file: {file_path}"
-    except Exception as exc:
-        return f"Error writing file: {exc}"
+        encoded = content.encode("utf-8")
+        file_path.write_bytes(encoded)
+    except OSError as exc:
+        return failure(f"Failed to write file: {exc}")
+
+    return success(
+        {
+            "path": str(file_path),
+            "created": not existed,
+            "modified": existed,
+            "bytes_written": len(encoded),
+        },
+        message="File created" if not existed else "File written",
+    )
 
 
 def get_file_info(path: str) -> dict[str, Any]:
-    """
-    Return metadata about a file or directory.
+    """Return metadata about a file or directory.
+
+    Args:
+        path: Path to the file or directory to inspect.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "name": str, "type": "file"|"dir",
+        "size_bytes": int, "modified_time": str, "created_time": str,
+        "extension": str|None}.
     """
     file_path = _resolve_path(path)
 
     if not file_path.exists():
-        return {
-            "error": f"path does not exist: {path}"
+        return failure(f"Path not found: {file_path}")
+
+    try:
+        stat = file_path.stat()
+    except OSError as exc:
+        return failure(f"Failed to stat path: {exc}")
+
+    is_dir = file_path.is_dir()
+
+    return success(
+        {
+            "path": str(file_path),
+            "name": file_path.name,
+            "type": "dir" if is_dir else "file",
+            "size_bytes": stat.st_size,
+            "modified_time": datetime.fromtimestamp(
+                stat.st_mtime
+            ).isoformat(),
+            "created_time": datetime.fromtimestamp(
+                stat.st_ctime
+            ).isoformat(),
+            "extension": file_path.suffix if not is_dir else None,
         }
-
-    stat = file_path.stat()
-
-    return {
-        "path": str(file_path),
-        "name": file_path.name,
-        "type": "directory" if file_path.is_dir() else "file",
-        "size_bytes": stat.st_size,
-        "modified_time": datetime.fromtimestamp(
-            stat.st_mtime
-        ).isoformat(),
-        "created_time": datetime.fromtimestamp(
-            stat.st_ctime
-        ).isoformat(),
-        "extension": file_path.suffix if file_path.is_file() else None,
-    }
+    )
 
 
-def create_directory(path: str) -> str:
-    """
-    Create a directory and any missing parent directories.
+def create_directory(path: str) -> dict[str, Any]:
+    """Create a directory and any missing parent directories.
+
+    Args:
+        path: Path of the directory to create.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "created": bool}; created is False when the
+        directory already existed (still a success).
     """
     directory = _resolve_path(path)
 
+    existed = directory.exists()
+
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        return f"Directory created: {directory}"
-    except Exception as exc:
-        return f"Error creating directory: {exc}"
+    except OSError as exc:
+        return failure(f"Failed to create directory: {exc}")
+
+    return success(
+        {"path": str(directory), "created": not existed},
+        message=(
+            "Directory already exists"
+            if existed
+            else "Directory created"
+        ),
+    )
 
 
-def delete_file(path: str) -> str:
-    """
-    Delete a file.
+def delete_file(path: str) -> dict[str, Any]:
+    """Delete a file. Directories are never deleted.
+
+    Args:
+        path: Path of the file to delete.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "deleted": True}.
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return f"Error: file does not exist: {path}"
-
-    if not file_path.is_file():
-        return f"Error: path is not a file: {path}"
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
     try:
         file_path.unlink()
-        return f"Deleted file: {file_path}"
-    except Exception as exc:
-        return f"Error deleting file: {exc}"
+    except OSError as exc:
+        return failure(f"Failed to delete file: {exc}")
+
+    return success(
+        {"path": str(file_path), "deleted": True},
+        message="File deleted",
+    )
 
 
 def delete_directory(
     path: str,
     recursive: bool = False,
-) -> str:
-    """
-    Delete a directory.
+) -> dict[str, Any]:
+    """Delete a directory.
 
-    recursive=False only removes an empty directory.
+    recursive=False only removes an empty directory; a non-empty
+    directory fails with a clear message and is never auto-removed.
+    recursive=True removes the whole tree with shutil.rmtree.
+
+    Args:
+        path: Path of the directory to delete.
+        recursive: Whether to remove non-empty directories.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "recursive": bool, "removed": True}.
     """
     directory = _resolve_path(path)
 
-    if not directory.exists():
-        return f"Error: directory does not exist: {path}"
+    try:
+        directory = _require_dir(directory)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    if not directory.is_dir():
-        return f"Error: path is not a directory: {path}"
+    if not recursive:
+        try:
+            if any(directory.iterdir()):
+                return failure(
+                    "Directory is not empty and recursive is False: "
+                    f"{directory}"
+                )
+        except OSError as exc:
+            return failure(f"Failed to inspect directory: {exc}")
 
     try:
         if recursive:
             shutil.rmtree(directory)
         else:
             directory.rmdir()
-
-        return f"Deleted directory: {directory}"
-
     except OSError as exc:
-        return f"Error deleting directory: {exc}"
+        return failure(f"Failed to delete directory: {exc}")
+
+    return success(
+        {
+            "path": str(directory),
+            "recursive": recursive,
+            "removed": True,
+        },
+        message="Directory removed",
+    )
 
 
 def move_file(
     source: str,
     destination: str,
-) -> str:
-    """
-    Move a file or directory.
+) -> dict[str, Any]:
+    """Move a file or directory to a new location.
+
+    The destination's parent directory is created if missing; the
+    destination is the new path (shutil.move semantics).
+
+    Args:
+        source: Path to move.
+        destination: Target path.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"source": str, "destination": str, "moved": True}.
     """
     src = _resolve_path(source)
-    dst = _resolve_path(destination)
 
     if not src.exists():
-        return f"Error: source does not exist: {source}"
+        return failure(f"Source not found: {src}")
+
+    dst = _resolve_path(destination)
 
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
-        return f"Moved {src} -> {dst}"
-    except Exception as exc:
-        return f"Error moving path: {exc}"
+    except OSError as exc:
+        return failure(f"Failed to move: {exc}")
+
+    return success(
+        {
+            "source": str(src),
+            "destination": str(dst),
+            "moved": True,
+        },
+        message="Moved successfully",
+    )
 
 
 def copy_file(
     source: str,
     destination: str,
-) -> str:
-    """
-    Copy a file or directory.
+) -> dict[str, Any]:
+    """Copy a file or directory to a new location.
+
+    Directories are copied recursively (dirs_exist_ok=True); files use
+    copy2. The destination's parent directory is created if missing.
+
+    Args:
+        source: Path to copy.
+        destination: Target path.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"source": str, "destination": str, "copied": True}.
     """
     src = _resolve_path(source)
-    dst = _resolve_path(destination)
 
     if not src.exists():
-        return f"Error: source does not exist: {source}"
+        return failure(f"Source not found: {src}")
+
+    dst = _resolve_path(destination)
 
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -462,13 +715,18 @@ def copy_file(
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst)
+    except OSError as exc:
+        return failure(f"Failed to copy: {exc}")
 
-        return f"Copied {src} -> {dst}"
-    except Exception as exc:
-        return f"Error copying path: {exc}"
+    return success(
+        {
+            "source": str(src),
+            "destination": str(dst),
+            "copied": True,
+        },
+        message="Copied successfully",
+    )
 
-
-# ============================================================
 # 2. CODE SEARCH
 # ============================================================
 
