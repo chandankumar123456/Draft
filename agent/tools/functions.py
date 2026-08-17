@@ -1006,7 +1006,9 @@ def find_files(
 
     Results are filtered so that no result path passes through an
     ignored directory (IGNORED_DIRS) at any level; the requested root
-    itself is never filtered.
+    itself is never filtered. Patterns that escape the root (e.g.
+    "../*.py") are supported but only results that resolve inside the
+    requested root are reported; out-of-root results are skipped.
 
     Args:
         pattern: Glob pattern, e.g. "*.py", "**/*.py", "test_*.py".
@@ -1038,14 +1040,20 @@ def find_files(
     except Exception as exc:
         return failure(f"Failed to search files: {exc}")
 
-    filtered = [
-        item
-        for item in found
-        if not any(
+    filtered: list[Path] = []
+    for item in found:
+        try:
+            resolved = item.resolve()
+        except OSError:
+            continue
+        if not resolved.is_relative_to(root):
+            continue
+        if any(
             part in IGNORED_DIRS
-            for part in item.relative_to(root).parts
-        )
-    ]
+            for part in resolved.relative_to(root).parts
+        ):
+            continue
+        filtered.append(resolved)
 
     files = sorted(
         (str(item) for item in filtered),
