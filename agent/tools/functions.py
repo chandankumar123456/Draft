@@ -11,7 +11,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.request import Request, urlopen
 
 
@@ -19,21 +19,152 @@ from urllib.request import Request, urlopen
 # Common Helpers
 # ============================================================
 
+def success(data: Any = None, message: str | None = None) -> dict[str, Any]:
+    """Return a successful result envelope.
+
+    The envelope always contains exactly four keys: success, data,
+    message, error. The returned dict is JSON-serializable.
+    """
+    return {"success": True, "data": data, "message": message, "error": None}
+
+
+def failure(
+    error: str | Exception,
+    data: Any = None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Return a failed result envelope.
+
+    error is converted with str(error). The envelope always contains
+    exactly four keys: success, data, message, error. The returned
+    dict is JSON-serializable.
+    """
+    return {"success": False, "data": data, "message": message, "error": str(error)}
+
+
+IGNORED_DIRS: frozenset[str] = frozenset({
+    ".git", ".venv", "venv", "draft_venv", "__pycache__",
+    "node_modules", ".mypy_cache", ".pytest_cache", "dist", "build",
+})
+
+
+def _walk_files(root: Path) -> Iterator[Path]:
+    """Yield files under root, skipping IGNORED_DIRS at any depth.
+
+    Ignored directories are pruned before descending so their trees
+    are never traversed (draft_venv alone holds tens of thousands of
+    files). The root path itself is never filtered: an explicitly
+    requested root is always walked even if its name is in
+    IGNORED_DIRS, since filtering only applies to directories
+    encountered during recursion.
+    """
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+        for name in files:
+            yield Path(current) / name
+
+
 def _resolve_path(path: str | Path = ".") -> Path:
-    """Resolve a path and return it as a Path object."""
+    """Resolve a path and return it as a Path object.
+
+    Does expanduser then absolute resolution. "." (or "" or omitted)
+    resolves to the project root: the git top-level when detectable,
+    else CWD. This fixes "." meaning the agent process CWD (agent/)
+    rather than the repo root. Other relative paths resolve against
+    CWD, preserving existing semantics. Absolute paths are used
+    as-is. No confinement: resolved paths may lie anywhere.
+    """
+    if path is None or str(path) in ("", "."):
+        root = _get_project_root()
+        if root is not None:
+            return root
+        return Path.cwd().resolve()
     return Path(path).expanduser().resolve()
 
 
+def _require_file(path: Path) -> Path:
+    """Return path if it exists and is a file, else raise ValueError."""
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"File not found: {path}")
+    return path
+
+
+def _require_dir(path: Path) -> Path:
+    """Return path if it exists and is a directory, else raise ValueError."""
+    if not path.exists() or not path.is_dir():
+        raise ValueError(f"Directory not found: {path}")
+    return path
+
+
+def _get_project_root(start: str = ".") -> Path | None:
+    """Return the git top-level containing start, or None if unavailable.
+
+    Never raises: on any failure (no repo, git missing, timeout,
+    invalid start path) it returns None per its documented contract
+    "git root not available".
+    """
+    cwd = Path(start).expanduser().resolve()
+    result = _run_subprocess(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=cwd,
+        timeout=10,
+    )
+    if result["success"]:
+        return Path(result["stdout"].strip())
+    return None
+
+
 def _run_subprocess(
-    command: str | list[str],
+    command: list[str] | str,
     cwd: str | Path | None = None,
-    timeout: int = 30,
+    timeout: int | None = 30,
+    max_output_chars: int = 20_000,
 ) -> dict[str, Any]:
-    """Run a subprocess and return structured output."""
+    """Run a subprocess and return a structured detail dict. Never raises.
+
+    Return keys: success (bool), returncode (int|None), stdout (str),
+    stderr (str), timed_out (bool), error (str|None). stdout and
+    stderr are always str, each truncated to max_output_chars with an
+    explicit "...[truncated]" marker appended when truncation happens.
+
+    A string command is executed through the shell (shell=True) to
+    allow shell syntax (pipes, redirects); this is NOT safe for
+    untrusted input. A list command runs without a shell.
+
+    If cwd is None the command runs in the project root (same
+    resolution as _resolve_path(".")). A given cwd is resolved and
+    validated; if it is not a directory, a failure dict is returned.
+
+    This helper returns the subprocess detail dict, not the
+    success()/failure() envelope; callers (git tools, run_*) wrap it
+    into the envelope themselves.
+    """
+    if cwd is not None:
+        workdir = Path(cwd).expanduser().resolve()
+        if not workdir.is_dir():
+            message = f"Invalid working directory: {cwd}"
+            return {
+                "success": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": message,
+                "timed_out": False,
+                "error": message,
+            }
+    else:
+        workdir = _resolve_path(".")
+
+    def truncate(stream: str | None) -> str:
+        if stream is None:
+            return ""
+        if len(stream) <= max_output_chars:
+            return stream
+        return stream[:max_output_chars] + "\n...[truncated]"
+
     try:
         result = subprocess.run(
             command,
-            cwd=str(_resolve_path(cwd)) if cwd else None,
+            cwd=str(workdir),
             shell=isinstance(command, str),
             capture_output=True,
             text=True,
@@ -41,26 +172,43 @@ def _run_subprocess(
         )
 
         return {
-            "returncode": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
             "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": truncate(result.stdout),
+            "stderr": truncate(result.stderr),
+            "timed_out": False,
+            "error": None,
         }
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         return {
-            "returncode": -1,
-            "stdout": "",
-            "stderr": f"Command timed out after {timeout} seconds.",
             "success": False,
+            "returncode": None,
+            "stdout": truncate(exc.stdout),
+            "stderr": truncate(exc.stderr),
+            "timed_out": True,
+            "error": f"Command timed out after {timeout}s",
+        }
+
+    except FileNotFoundError as exc:
+        cmd = command if isinstance(command, str) else " ".join(command)
+        return {
+            "success": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+            "timed_out": False,
+            "error": f"Command not found: {cmd}",
         }
 
     except Exception as exc:
         return {
-            "returncode": -1,
+            "success": False,
+            "returncode": None,
             "stdout": "",
             "stderr": str(exc),
-            "success": False,
+            "timed_out": False,
+            "error": str(exc),
         }
 
 
