@@ -2849,11 +2849,127 @@ def fetch_url(url: str, timeout: int = 20) -> dict[str, Any]:
 # 9. UTILITIES
 # ============================================================
 
+CALC_MAX_LENGTH = 500
+CALC_MAX_DEPTH = 30
+
+CALC_NAMES: dict[str, Any] = {
+    "sqrt": math.sqrt,
+    "pow": math.pow,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "fabs": math.fabs,
+    "factorial": math.factorial,
+    "log": math.log,
+    "log10": math.log10,
+    "log2": math.log2,
+    "exp": math.exp,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "degrees": math.degrees,
+    "radians": math.radians,
+    "trunc": math.trunc,
+    "copysign": math.copysign,
+    "pi": math.pi,
+    "e": math.e,
+    "inf": math.inf,
+    "nan": math.nan,
+}
+
+
+def _calc_eval(node: ast.AST, depth: int) -> int | float:
+    """Evaluate a whitelisted AST node and return its numeric value.
+
+    Raises ValueError on any construct outside the whitelisted grammar
+    or when the nesting depth exceeds CALC_MAX_DEPTH.
+    """
+    if depth > CALC_MAX_DEPTH:
+        raise ValueError(
+            f"Expression too deeply nested (max depth {CALC_MAX_DEPTH})"
+        )
+
+    if isinstance(node, ast.Expression):
+        return _calc_eval(node.body, depth + 1)
+
+    if isinstance(node, ast.Constant):
+        if type(node.value) in (int, float):
+            return node.value
+        raise ValueError(
+            f"Unsupported constant: {node.value!r} "
+            "(only int and float literals are allowed)"
+        )
+
+    if isinstance(node, ast.UnaryOp):
+        operand = _calc_eval(node.operand, depth + 1)
+        if isinstance(node.op, ast.USub):
+            return -operand
+        if isinstance(node.op, ast.UAdd):
+            return +operand
+        raise ValueError(
+            f"Unsupported unary operator: {type(node.op).__name__}"
+        )
+
+    if isinstance(node, ast.BinOp):
+        left = _calc_eval(node.left, depth + 1)
+        right = _calc_eval(node.right, depth + 1)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right
+        if isinstance(node.op, ast.FloorDiv):
+            return left // right
+        if isinstance(node.op, ast.Mod):
+            return left % right
+        if isinstance(node.op, ast.Pow):
+            return left ** right
+        raise ValueError(
+            f"Unsupported binary operator: {type(node.op).__name__}"
+        )
+
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError(
+                f"Unsupported expression construct: "
+                f"{type(node.func).__name__}"
+            )
+        if node.keywords:
+            raise ValueError("Keyword arguments are not supported")
+        func = CALC_NAMES.get(node.func.id)
+        if func is None:
+            raise ValueError(f"Unknown function: {node.func.id}")
+        args = [_calc_eval(arg, depth + 1) for arg in node.args]
+        return func(*args)
+
+    if isinstance(node, ast.Name):
+        value = CALC_NAMES.get(node.id)
+        if value is None:
+            raise ValueError(f"Unknown name: {node.id}")
+        return value
+
+    raise ValueError(
+        f"Unsupported expression construct: {type(node).__name__}"
+    )
+
+
 def get_current_time(
     utc: bool = False,
-) -> str:
-    """
-    Return the current local or UTC time.
+) -> dict[str, Any]:
+    """Return the current time as ISO-8601 plus epoch timestamp.
+
+    Args:
+        utc: When True, return UTC time; otherwise return local time
+            including the local UTC offset.
+
+    Returns:
+        A success envelope; data is {"iso": str, "utc": bool,
+        "timestamp": float}. Never raises.
     """
     now = (
         datetime.now(timezone.utc)
@@ -2861,75 +2977,74 @@ def get_current_time(
         else datetime.now().astimezone()
     )
 
-    return now.isoformat()
+    return success(
+        {
+            "iso": now.isoformat(),
+            "utc": utc,
+            "timestamp": now.timestamp(),
+        }
+    )
 
 
 def calculate(
     expression: str,
 ) -> dict[str, Any]:
-    """
-    Safely evaluate a mathematical expression.
+    """Safe arithmetic evaluator. Supports + - * / // % **, unary
+    signs, parentheses, and the whitelisted functions sqrt, pow, floor,
+    ceil, fabs, factorial, log, log10, log2, exp, sin, cos, tan, asin,
+    acos, atan, degrees, radians, trunc, copysign and constants pi, e,
+    inf, nan. Arbitrary Python code is NOT executed.
 
-    Supports arithmetic and selected math functions.
-    """
-    allowed_names = {
-        name: getattr(math, name)
-        for name in dir(math)
-        if not name.startswith("_")
-    }
+    The expression is parsed to an AST and evaluated by walking the
+    tree; eval/exec are never used. Functions and constants resolve by
+    bare name from a fixed lookup table (CALC_NAMES), so attribute
+    access such as "math.sqrt" is rejected, as are imports, lambdas,
+    conditionals, assignments, sequences, and any other construct
+    outside the whitelist. Expressions are capped at CALC_MAX_LENGTH
+    characters and CALC_MAX_DEPTH nesting depth.
 
-    allowed_names.update({
-        "abs": abs,
-        "round": round,
-        "min": min,
-        "max": max,
-        "pow": pow,
-    })
+    Args:
+        expression: The arithmetic expression to evaluate.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"expression": str, "result": int|float, "result_type":
+        "int"|"float"}. Empty, invalid, or rejected expressions, and
+        math errors (division by zero, domain, overflow) return a
+        failure envelope and never raise.
+    """
+    if not expression.strip():
+        return failure("Expression must not be empty")
+
+    if len(expression) > CALC_MAX_LENGTH:
+        return failure(
+            f"Expression too long ({len(expression)} characters, "
+            f"max {CALC_MAX_LENGTH})"
+        )
 
     try:
-        tree = ast.parse(
-            expression,
-            mode="eval",
-        )
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        return failure(f"Invalid expression syntax: {exc}")
 
-        for node in ast.walk(tree):
-            if isinstance(
-                node,
-                (
-                    ast.Import,
-                    ast.ImportFrom,
-                    ast.Attribute,
-                    ast.Subscript,
-                    ast.Lambda,
-                ),
-            ):
-                return {
-                    "success": False,
-                    "error": "Unsupported expression.",
-                }
+    try:
+        result = _calc_eval(tree, 0)
+    except (ZeroDivisionError, ValueError, OverflowError, TypeError) as exc:
+        return failure(str(exc))
 
-        result = eval(
-            compile(tree, "<calculator>", "eval"),
-            {"__builtins__": {}},
-            allowed_names,
-        )
-
-        return {
-            "success": True,
+    return success(
+        {
             "expression": expression,
             "result": result,
+            "result_type": "int" if isinstance(result, int) else "float",
         }
-
-    except Exception as exc:
-        return {
-            "success": False,
-            "expression": expression,
-            "error": str(exc),
-        }
+    )
 
 
-def generate_uuid() -> str:
+def generate_uuid() -> dict[str, Any]:
+    """Generate a random UUID (version 4).
+
+    Returns:
+        A success envelope; data is {"uuid": str}. Never raises.
     """
-    Generate a UUID4.
-    """
-    return str(uuid.uuid4())
+    return success({"uuid": str(uuid.uuid4())})
