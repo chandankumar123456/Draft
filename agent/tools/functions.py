@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -14,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -2686,43 +2688,161 @@ def git_stash_pop(
 # 8. WEB
 # ============================================================
 
-def search_web(
-    query: str,
-) -> str:
-    """
-    Placeholder for a web-search provider.
+WEB_MAX_BYTES = 200_000
+WEB_READ_CHUNK = 8_192
+WEB_SAFE_HEADERS = ("content-type", "server", "date")
+WEB_USER_AGENT = "Draft-Coding-Agent/1.0"
 
-    This should later be connected to a real search API
-    such as Bing Web Search / Azure AI Search / another provider.
+
+def search_web(query: str) -> dict[str, Any]:
+    """Informational placeholder for web search (kept, not deleted).
+
+    Web search is deliberately NOT implemented here: the agent already
+    has the Azure WebSearchTool attached (see agent.py), so on the LLM
+    path this custom tool is redundant. The function is kept for the
+    tools registry and returns a success envelope that documents the
+    duplication instead of performing a search.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"query": str, "available": False, "reason": str} where reason
+        states that web search is provided natively by the agent's
+        Azure WebSearchTool. An empty query fails.
     """
-    return (
-        "search_web is not configured yet. "
-        f"Search query: {query}"
+    if not query.strip():
+        return failure("Query must not be empty")
+
+    reason = (
+        "Web search is provided natively by the agent's Azure "
+        "WebSearchTool; this custom tool is not configured."
+    )
+
+    return success(
+        {"query": query, "available": False, "reason": reason},
+        message=reason,
     )
 
 
-def fetch_url(
-    url: str,
-    timeout: int = 20,
-) -> str:
+def fetch_url(url: str, timeout: int = 20) -> dict[str, Any]:
+    """Fetch text content from a URL and return a result envelope.
+
+    The response body is read in chunks and capped at WEB_MAX_BYTES
+    (200,000 bytes): reading stops at the cap, the rest of the
+    response is not downloaded, and truncated is True -- truncation is
+    never silent. Content is decoded using the charset from the
+    response headers, falling back to UTF-8 with errors="replace".
+    Redirects are followed by urllib. This function never raises.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"url": str, "status": int, "status_text": str|None,
+        "content_type": str|None, "charset": str|None, "content": str,
+        "truncated": bool, "bytes_read": int, "headers": dict} where
+        headers only includes the safe keys content-type, server and
+        date. On failure, data is {"url": str, "status": int|None};
+        HTTP errors carry the status code in the error message.
     """
-    Fetch text content from a URL.
-    """
+    if not isinstance(url, str):
+        return failure(
+            "Invalid URL: url must be a string",
+            data={"url": url, "status": None},
+        )
+
     try:
         request = Request(
             url,
-            headers={
-                "User-Agent": "Draft-Coding-Agent/1.0"
-            },
+            headers={"User-Agent": WEB_USER_AGENT},
+        )
+    except ValueError as exc:
+        return failure(
+            f"Invalid URL: {exc}",
+            data={"url": url, "status": None},
         )
 
+    try:
         with urlopen(request, timeout=timeout) as response:
-            data = response.read()
+            status = getattr(response, "status", None)
+            status_text = getattr(response, "reason", None)
+            content_type = response.headers.get("Content-Type")
+            charset = response.headers.get_content_charset()
 
-        return data.decode("utf-8", errors="replace")
+            headers: dict[str, str] = {}
+            for name in WEB_SAFE_HEADERS:
+                value = response.headers.get(name)
+                if value is not None:
+                    headers[name] = value
+
+            chunks: list[bytes] = []
+            total = 0
+            truncated = False
+            while True:
+                chunk = response.read(
+                    min(WEB_READ_CHUNK, WEB_MAX_BYTES - total)
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= WEB_MAX_BYTES:
+                    truncated = True
+                    break
+
+            raw = b"".join(chunks)
+            try:
+                content = raw.decode(charset or "utf-8", errors="replace")
+            except LookupError:
+                charset = None
+                content = raw.decode("utf-8", errors="replace")
+
+    except HTTPError as exc:
+        return failure(
+            f"HTTP error {exc.code}: {exc.reason}",
+            data={"url": url, "status": exc.code},
+        )
+
+    except URLError as exc:
+        return failure(
+            f"Failed to fetch {url}: {exc.reason}",
+            data={"url": url, "status": None},
+        )
+
+    except (TimeoutError, socket.timeout):
+        return failure(
+            f"Failed to fetch {url}: timed out after {timeout}s",
+            data={"url": url, "status": None},
+        )
+
+    except ValueError as exc:
+        return failure(
+            f"Invalid URL: {exc}",
+            data={"url": url, "status": None},
+        )
 
     except Exception as exc:
-        return f"Error fetching URL: {exc}"
+        return failure(
+            f"Failed to fetch {url}: {exc}",
+            data={"url": url, "status": None},
+        )
+
+    return success(
+        {
+            "url": url,
+            "status": status,
+            "status_text": status_text,
+            "content_type": content_type,
+            "charset": charset,
+            "content": content,
+            "truncated": truncated,
+            "bytes_read": total,
+            "headers": headers,
+        },
+        message=(
+            f"Fetched {total} bytes from {url} "
+            f"(truncated at {WEB_MAX_BYTES} bytes)"
+            if truncated
+            else f"Fetched {total} bytes from {url}"
+        ),
+    )
 
 
 # ============================================================
