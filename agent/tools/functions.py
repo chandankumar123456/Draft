@@ -983,132 +983,276 @@ def get_file_symbols(path: str) -> list[dict[str, Any]]:
 # 3. CODE EDITING
 # ============================================================
 
-def apply_patch(
-    file: str,
-    patch: str,
-) -> dict[str, Any]:
-    """
-    Apply a unified diff patch to a single file.
+EDIT_TIMEOUT = 30
+EDIT_MAX_OUTPUT_CHARS = 20_000
 
-    The patch must contain changes for the specified file.
+
+def _run_process_with_input(
+    command: list[str],
+    cwd: str | Path,
+    input_text: str,
+    timeout: int = EDIT_TIMEOUT,
+    max_output_chars: int = EDIT_MAX_OUTPUT_CHARS,
+) -> dict[str, Any]:
+    """Run a subprocess with stdin input; return a structured dict. Never raises.
+
+    Mirrors _run_subprocess's return contract: {success, returncode,
+    stdout, stderr, timed_out, error}, but additionally feeds
+    input_text to the process's stdin, which _run_subprocess cannot
+    do. Used by apply_patch to pipe a unified diff into git apply.
+    stdout and stderr are truncated to max_output_chars with an
+    explicit "...[truncated]" marker appended when truncation happens.
+    A string command is never used here; command must be a list run
+    without a shell.
 
     Args:
-        file: Path to the target file.
-        patch: Unified diff text.
+        command: Executable and arguments (list form, no shell).
+        cwd: Working directory for the process (must be a directory).
+        input_text: Text written to the process's stdin.
+        timeout: Timeout in seconds; the process is killed on expiry.
+        max_output_chars: Maximum characters kept from stdout/stderr.
 
     Returns:
-        {
-            "success": bool,
-            "file": str,
-            "message": str,
-            "error": str | None
-        }
+        The subprocess detail dict (not the success()/failure()
+        envelope; callers wrap it into the envelope themselves).
     """
-    file_path = _resolve_path(file)
 
-    if not file_path.exists():
-        return {
-            "success": False,
-            "file": str(file_path),
-            "message": "Patch failed.",
-            "error": f"File does not exist: {file}",
-        }
-
-    if not file_path.is_file():
-        return {
-            "success": False,
-            "file": str(file_path),
-            "message": "Patch failed.",
-            "error": f"Path is not a file: {file}",
-        }
-
-    if not patch.strip():
-        return {
-            "success": False,
-            "file": str(file_path),
-            "message": "Patch failed.",
-            "error": "Patch is empty.",
-        }
+    def truncate(stream: str | None) -> str:
+        if stream is None:
+            return ""
+        if len(stream) <= max_output_chars:
+            return stream
+        return stream[:max_output_chars] + "\n...[truncated]"
 
     try:
-        original = file_path.read_text(encoding="utf-8")
-
-        # The patch is applied through git's patch engine,
-        # but only against the specified file.
-        process = subprocess.run(
-            ["git", "apply", "--unidiff-zero", "--whitespace=nowarn", "-"],
-            cwd=file_path.parent,
-            input=patch,
+        result = subprocess.run(
+            command,
+            cwd=str(cwd),
+            input=input_text,
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
-
-        if process.returncode != 0:
-            return {
-                "success": False,
-                "file": str(file_path),
-                "message": "Patch could not be applied.",
-                "error": process.stderr.strip() or process.stdout.strip(),
-            }
-
-        modified = file_path.read_text(encoding="utf-8")
-
         return {
-            "success": True,
-            "file": str(file_path),
-            "message": "Patch applied successfully.",
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": truncate(result.stdout),
+            "stderr": truncate(result.stderr),
+            "timed_out": False,
             "error": None,
-            "changed": original != modified,
         }
 
-    except UnicodeDecodeError:
+    except subprocess.TimeoutExpired as exc:
         return {
             "success": False,
-            "file": str(file_path),
-            "message": "Patch failed.",
-            "error": "File is not a UTF-8 text file.",
+            "returncode": None,
+            "stdout": truncate(exc.stdout),
+            "stderr": truncate(exc.stderr),
+            "timed_out": True,
+            "error": f"Command timed out after {timeout}s",
+        }
+
+    except FileNotFoundError as exc:
+        return {
+            "success": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+            "timed_out": False,
+            "error": f"Command not found: {' '.join(command)}",
         }
 
     except Exception as exc:
         return {
             "success": False,
-            "file": str(file_path),
-            "message": "Patch failed.",
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+            "timed_out": False,
             "error": str(exc),
         }
+
+
+def _git_apply_failure(
+    result: dict[str, Any],
+    message: str,
+) -> dict[str, Any]:
+    """Convert a failed git apply result into a failure envelope.
+
+    git-not-available detection: a missing git executable surfaces as
+    FileNotFoundError from _run_process_with_input (error starts with
+    "Command not found"); a non-zero returncode whose stderr contains
+    "not recognized" or "command not found" is also treated as git
+    being unavailable. Otherwise the failure detail is the git stderr
+    (or stdout when stderr is empty), truncated by the helper.
+    """
+    error = result["error"] or ""
+    stderr = result["stderr"] or ""
+    stdout = result["stdout"] or ""
+    combined = error + " " + stderr
+
+    if (
+        "Command not found" in error
+        or "not recognized" in stderr
+        or "command not found" in stderr.lower()
+    ):
+        return failure(
+            "git apply is required for apply_patch; git not available"
+        )
+
+    if result["timed_out"]:
+        return failure(f"{message} (timed out after {EDIT_TIMEOUT}s)")
+
+    detail = stderr.strip() or stdout.strip() or error
+    return failure(f"{message}: {detail}")
+
+
+def apply_patch(
+    file: str,
+    patch: str,
+) -> dict[str, Any]:
+    """Apply a unified diff patch to a single file via git apply.
+
+    The patch is first validated with a dry run (`git apply --check`)
+    and only applied if that check passes; a malformed patch or one
+    that does not match the file content fails with the git stderr and
+    the file is left untouched. After a successful apply the file is
+    re-read and the result is reported as a failure if the content did
+    not change, so a no-op patch is never reported as a success.
+
+    Requires git to be available; if it is not, the call fails rather
+    than falling back to a different patch engine.
+
+    Args:
+        file: Path to the target file (must exist).
+        patch: Unified diff text, fed to git apply on stdin.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"file": str, "changed": bool, "patch_applied": bool}.
+    """
+    file_path = _resolve_path(file)
+
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
+
+    if not patch.strip():
+        return failure("Empty patch")
+
+    apply_command = [
+        "git", "apply", "--unidiff-zero", "--whitespace=nowarn", "-",
+    ]
+
+    check = _run_process_with_input(
+        ["git", "apply", "--check", "--unidiff-zero", "--whitespace=nowarn", "-"],
+        cwd=file_path.parent,
+        input_text=patch,
+    )
+    if not check["success"]:
+        return _git_apply_failure(check, "Patch check failed")
+
+    try:
+        original = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
+
+    applied = _run_process_with_input(
+        apply_command,
+        cwd=file_path.parent,
+        input_text=patch,
+    )
+    if not applied["success"]:
+        return _git_apply_failure(applied, "Patch could not be applied")
+
+    try:
+        modified = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
+
+    changed = original != modified
+    if not changed:
+        return failure("Patch reported success but file unchanged")
+
+    return success(
+        {"file": str(file_path), "changed": changed, "patch_applied": True},
+        message=f"Patch applied to {file_path}",
+    )
 
 def insert_text(
     path: str,
     line: int,
     text: str,
-) -> str:
-    """
-    Insert text before the specified 1-based line number.
+) -> dict[str, Any]:
+    """Insert text before the specified 1-based line number.
+
+    The text is inserted BEFORE the given 1-based line; line =
+    total_lines + 1 appends the text at the end of the file. line must
+    be in 1..total_lines+1 — out-of-range values fail rather than
+    being clamped. If text does not end with a newline, one is added
+    so the insertion does not merge with the following line.
+
+    Args:
+        path: Path to the file to edit.
+        line: 1-based line before which the text is inserted
+            (total_lines + 1 appends at the end).
+        text: Text to insert (a trailing newline is added if missing).
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "line": int, "inserted": bool,
+        "new_total_lines": int} where line is the insertion line.
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return f"Error: file does not exist: {path}"
+    if not isinstance(line, int) or isinstance(line, bool):
+        return failure(f"line must be an integer, got {line!r}")
 
     try:
-        lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
-        index = max(0, min(line - 1, len(lines)))
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
 
-        if not text.endswith("\n"):
-            text += "\n"
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
 
-        lines.insert(index, text)
-
-        file_path.write_text(
-            "".join(lines),
-            encoding="utf-8",
+    if line < 1 or line > total_lines + 1:
+        return failure(
+            f"line ({line}) must be between 1 and {total_lines + 1} "
+            f"(total_lines + 1) for {file_path}"
         )
 
-        return f"Inserted text at line {line}."
+    if not text.endswith("\n"):
+        text = text + "\n"
 
-    except Exception as exc:
-        return f"Error inserting text: {exc}"
+    lines.insert(line - 1, text)
+
+    try:
+        file_path.write_text("".join(lines), encoding="utf-8")
+    except OSError as exc:
+        return failure(f"Failed to write file: {exc}")
+
+    return success(
+        {
+            "path": str(file_path),
+            "line": line,
+            "inserted": True,
+            "new_total_lines": total_lines + 1,
+        },
+        message=f"Inserted {len(text)} characters before line {line}",
+    )
 
 
 def replace_text(
@@ -1116,72 +1260,160 @@ def replace_text(
     old: str,
     new: str,
     count: int = -1,
-) -> str:
-    """
-    Replace occurrences of text in a file.
+) -> dict[str, Any]:
+    """Replace occurrences of old with new in a file.
 
-    count=-1 replaces every occurrence.
+    Replacement is an exact literal string match — no fuzzy matching.
+    count=-1 (the default) replaces ALL occurrences; count >= 1
+    replaces exactly the first count occurrences and fails if the
+    requested count exceeds the occurrences actually found (never a
+    silent partial replacement). When count=-1 and more than one
+    occurrence exists, data reports "occurrences" so the caller can
+    see how many edits happened.
+
+    Args:
+        path: Path to the file to edit.
+        old: Literal text to search for. Must be non-empty.
+        new: Replacement text.
+        count: -1 to replace all occurrences, or a positive integer
+            for the number of leading occurrences to replace.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "old": str, "new": str, "count": int,
+        "occurrences": int} where count is the number of replacements
+        actually made and occurrences the number found in the file.
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return f"Error: file does not exist: {path}"
+    if not isinstance(count, int) or isinstance(count, bool):
+        return failure(f"count must be an integer, got {count!r}")
+
+    if not old:
+        return failure("Empty old string")
+
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
     try:
         content = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
 
-        occurrences = content.count(old)
+    occurrences = content.count(old)
 
-        if occurrences == 0:
-            return "No matching text found."
+    if occurrences == 0:
+        return failure(f"No matching text found: {old}")
 
-        content = content.replace(old, new, count)
+    if count == -1:
+        replaced = occurrences
+    elif count >= 1:
+        if count > occurrences:
+            return failure(
+                f"Requested count {count} exceeds occurrences {occurrences}"
+            )
+        replaced = count
+    else:
+        return failure(f"count must be -1 or >= 1, got {count}")
 
-        file_path.write_text(
-            content,
-            encoding="utf-8",
-        )
+    content = content.replace(old, new, replaced)
 
-        replaced = occurrences if count == -1 else min(occurrences, count)
+    try:
+        file_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        return failure(f"Failed to write file: {exc}")
 
-        return f"Replaced {replaced} occurrence(s)."
-
-    except Exception as exc:
-        return f"Error replacing text: {exc}"
+    return success(
+        {
+            "path": str(file_path),
+            "old": old,
+            "new": new,
+            "count": replaced,
+            "occurrences": occurrences,
+        },
+        message=f"Replaced {replaced} occurrence(s)",
+    )
 
 
 def delete_lines(
     path: str,
     start_line: int,
     end_line: int,
-) -> str:
-    """
-    Delete a range of 1-based inclusive lines.
+) -> dict[str, Any]:
+    """Delete a range of 1-based inclusive lines.
+
+    The range must satisfy 1 <= start_line <= end_line <= total_lines;
+    out-of-range or reversed ranges fail rather than being clamped.
+
+    Args:
+        path: Path to the file to edit.
+        start_line: First 1-based line to delete (inclusive).
+        end_line: Last 1-based line to delete (inclusive).
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "start_line": int, "end_line": int,
+        "deleted": int, "new_total_lines": int}.
     """
     file_path = _resolve_path(path)
 
-    if not file_path.exists():
-        return f"Error: file does not exist: {path}"
+    if not isinstance(start_line, int) or isinstance(start_line, bool):
+        return failure(f"start_line must be an integer, got {start_line!r}")
 
-    if start_line < 1 or end_line < start_line:
-        return "Error: invalid line range."
+    if not isinstance(end_line, int) or isinstance(end_line, bool):
+        return failure(f"end_line must be an integer, got {end_line!r}")
 
-    try:
-        lines = file_path.read_text(
-            encoding="utf-8"
-        ).splitlines(keepends=True)
+    if start_line < 1:
+        return failure(f"start_line must be >= 1, got {start_line}")
 
-        del lines[start_line - 1:end_line]
-
-        file_path.write_text(
-            "".join(lines),
-            encoding="utf-8",
+    if end_line < start_line:
+        return failure(
+            f"end_line ({end_line}) must be >= start_line ({start_line})"
         )
 
-        return f"Deleted lines {start_line}-{end_line}."
+    try:
+        file_path = _require_file(file_path)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    except Exception as exc:
-        return f"Error deleting lines: {exc}"
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return failure(f"File is not a UTF-8 text file: {file_path}")
+    except OSError as exc:
+        return failure(f"Failed to read file: {exc}")
+
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    if end_line > total_lines:
+        return failure(
+            f"end_line ({end_line}) is beyond the end of the file "
+            f"({total_lines} lines): {file_path}"
+        )
+
+    deleted = end_line - start_line + 1
+    del lines[start_line - 1:end_line]
+
+    try:
+        file_path.write_text("".join(lines), encoding="utf-8")
+    except OSError as exc:
+        return failure(f"Failed to write file: {exc}")
+
+    return success(
+        {
+            "path": str(file_path),
+            "start_line": start_line,
+            "end_line": end_line,
+            "deleted": deleted,
+            "new_total_lines": total_lines - deleted,
+        },
+        message=f"Deleted {deleted} lines {start_line}-{end_line}",
+    )
 
 
 # ============================================================
