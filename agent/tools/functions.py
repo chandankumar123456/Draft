@@ -4,10 +4,12 @@ import ast
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1545,173 +1547,471 @@ def typecheck_project(
 # 5. ENVIRONMENT
 # ============================================================
 
-def get_current_directory() -> str:
-    """
-    Return the current working directory.
-    """
-    return str(Path.cwd())
+def get_current_directory() -> dict[str, Any]:
+    """Return the current working directory.
 
-
-def get_project_root(
-    path: str = ".",
-) -> str:
+    Returns:
+        A success envelope. data is {"cwd": str}.
     """
-    Try to identify the Git project root.
-    Falls back to the resolved path.
-    """
-    result = _run_subprocess(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=path,
+    cwd = str(Path.cwd())
+    return success(
+        {"cwd": cwd},
+        message=f"Current working directory: {cwd}",
     )
 
-    if result["success"]:
-        return result["stdout"].strip()
 
-    return str(_resolve_path(path))
+def get_project_root(path: str = ".") -> dict[str, Any]:
+    """Resolve the Git project root for a given path.
 
+    Args:
+        path: Path to start the search from. Defaults to the current
+            directory.
 
-def get_environment() -> dict[str, str]:
+    Returns:
+        A success/failure envelope. On success, data is
+        {"project_root": str}. Fails when the path is not inside a Git
+        repository.
     """
-    Return environment variables.
-    """
-    return dict(os.environ)
+    start = _resolve_path(path)
+    root = _get_project_root(start)
+
+    if root is None:
+        return failure(
+            "Could not determine project root (not a git repository?)"
+        )
+
+    return success(
+        {"project_root": str(root)},
+        message=f"Project root: {root}",
+    )
 
 
-def get_python_version() -> str:
+def get_environment() -> dict[str, Any]:
+    """Return safe runtime metadata about the environment.
+
+    Returns safe runtime metadata only. Environment variable VALUES
+    are never exposed (they may contain secrets). The only
+    environment-derived values included are the directory list of
+    PATH (conventionally public) and the sorted set of environment
+    variable NAMES (names only, never values).
+
+    Returns:
+        A success envelope. data is {"platform": str, "python_version":
+        str, "python_executable": str, "cwd": str, "project_root":
+        str|None, "shell": str|None, "path_dirs": [str...],
+        "env_var_names": [str...], "platform_bits": str}.
     """
-    Return the running Python version.
-    """
-    return sys.version
+    root = _get_project_root()
+
+    if os.name == "nt":
+        shell = f"Windows ({os.name})"
+    else:
+        shell = os.environ.get("SHELL")
+
+    path_value = os.environ.get("PATH")
+    path_dirs = [
+        entry
+        for entry in (path_value.split(os.pathsep) if path_value else [])
+        if entry
+    ]
+
+    return success(
+        {
+            "platform": f"{platform.system()}/{platform.release()}",
+            "python_version": sys.version.split()[0],
+            "python_executable": sys.executable,
+            "cwd": str(Path.cwd()),
+            "project_root": str(root) if root is not None else None,
+            "shell": shell,
+            "path_dirs": path_dirs,
+            "env_var_names": sorted(os.environ.keys()),
+            "platform_bits": platform.architecture()[0],
+        },
+        message="Environment metadata (no environment variable values)",
+    )
 
 
-def which_command(
-    command: str,
-) -> str | None:
+def get_python_version() -> dict[str, Any]:
+    """Return the running Python version.
+
+    Returns:
+        A success envelope. data is {"version": str, "full": str}.
     """
-    Find the executable location for a command.
+    return success(
+        {
+            "version": sys.version.split()[0],
+            "full": sys.version.split("\n")[0],
+        }
+    )
+
+
+def which_command(command: str) -> dict[str, Any]:
+    """Locate an executable on the system PATH.
+
+    Args:
+        command: Name of the command to locate.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"command": str, "path": str|None}; path is None when the
+        command is not found (a valid answer, not an error). An empty
+        command fails.
     """
-    return shutil.which(command)
+    if not command or not command.strip():
+        return failure("Command must not be empty")
+
+    path = shutil.which(command)
+    data = {"command": command, "path": path}
+
+    if path is None:
+        return success(data, message="Not found in PATH")
+
+    return success(data, message=f"Found: {path}")
 
 
 # ============================================================
 # 6. PROJECT UNDERSTANDING
 # ============================================================
 
-def inspect_project(
-    path: str = ".",
-) -> dict[str, Any]:
-    """
-    Gather useful high-level project information.
+PROJECT_MAX_TOP_LEVEL = 50
+PROJECT_MAX_DEPENDENCIES = 50
+
+PROJECT_TYPE_MARKERS: dict[str, tuple[str, ...]] = {
+    "Python": ("pyproject.toml", "requirements.txt", "setup.py"),
+    "Node.js": ("package.json",),
+    "Rust": ("Cargo.toml",),
+    "Go": ("go.mod",),
+    "Java": ("pom.xml", "build.gradle"),
+    "C/C++": ("CMakeLists.txt",),
+    "Docker": ("Dockerfile",),
+}
+
+PROJECT_MARKERS: tuple[str, ...] = tuple(
+    marker
+    for markers in PROJECT_TYPE_MARKERS.values()
+    for marker in markers
+)
+
+
+def inspect_project(path: str = ".") -> dict[str, Any]:
+    """Gather a compact high-level summary of a project.
+
+    File/directory counts come from _walk_files, so IGNORED_DIRS
+    (virtualenvs, node_modules, ...) are excluded. top_level is sorted
+    case-insensitively and capped at PROJECT_MAX_TOP_LEVEL entries;
+    when the cap is hit truncated is True.
+
+    Args:
+        path: Directory to inspect. Defaults to the current directory.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "name": str, "file_count": int, "dir_count": int,
+        "total_size_bytes": int, "top_level": [{"name": str, "type":
+        "file"|"dir"}...], "truncated": bool, "has_git": bool,
+        "has_dockerfile": bool, "python_files": int,
+        "has_requirements_txt": bool, "has_pyproject_toml": bool,
+        "has_package_json": bool, "project_types": [str...]}.
     """
     root = _resolve_path(path)
 
-    if not root.exists():
-        return {"error": f"path does not exist: {path}"}
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
 
-    files = [
-        item.name
-        for item in root.iterdir()
-        if item.is_file()
+    file_count = 0
+    python_files = 0
+    total_size_bytes = 0
+
+    for file_path in _walk_files(root):
+        file_count += 1
+        if file_path.suffix == ".py":
+            python_files += 1
+        try:
+            total_size_bytes += file_path.stat().st_size
+        except OSError:
+            continue
+
+    dir_count = 0
+    for current, dirs, _ in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+        dir_count += 1
+
+    try:
+        top_level = [
+            {
+                "name": item.name,
+                "type": "dir" if item.is_dir() else "file",
+            }
+            for item in root.iterdir()
+        ]
+    except OSError as exc:
+        return failure(f"Failed to inspect directory: {exc}")
+
+    top_level.sort(key=lambda entry: entry["name"].lower())
+
+    truncated = len(top_level) > PROJECT_MAX_TOP_LEVEL
+    if truncated:
+        top_level = top_level[:PROJECT_MAX_TOP_LEVEL]
+
+    project_types = detect_project_type(str(root))["data"]["project_types"]
+
+    return success(
+        {
+            "path": str(root),
+            "name": root.name,
+            "file_count": file_count,
+            "dir_count": dir_count,
+            "total_size_bytes": total_size_bytes,
+            "top_level": top_level,
+            "truncated": truncated,
+            "has_git": (root / ".git").exists(),
+            "has_dockerfile": (root / "Dockerfile").exists(),
+            "python_files": python_files,
+            "has_requirements_txt": (root / "requirements.txt").exists(),
+            "has_pyproject_toml": (root / "pyproject.toml").exists(),
+            "has_package_json": (root / "package.json").exists(),
+            "project_types": project_types,
+        },
+        message=(
+            f"Tree truncated at {PROJECT_MAX_TOP_LEVEL} top-level entries"
+            if truncated
+            else f"Found {file_count} files in {root}"
+        ),
+    )
+
+
+def detect_project_type(path: str = ".") -> dict[str, Any]:
+    """Detect likely project types from common project files.
+
+    Args:
+        path: Directory to inspect. Defaults to the current directory.
+
+    Returns:
+        A success/failure envelope. On success, data is
+        {"project_types": [str...], "markers": [{"marker": str,
+        "present": bool}...]}. project_types is empty when no
+        recognizable markers are found (a valid result).
+    """
+    root = _resolve_path(path)
+
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
+
+    markers = [
+        {"marker": marker, "present": (root / marker).exists()}
+        for marker in PROJECT_MARKERS
     ]
 
-    directories = [
-        item.name
-        for item in root.iterdir()
-        if item.is_dir()
+    present_names = {
+        marker["marker"]
+        for marker in markers
+        if marker["present"]
+    }
+
+    project_types = [
+        project_type
+        for project_type, marker_names in PROJECT_TYPE_MARKERS.items()
+        if any(marker in present_names for marker in marker_names)
     ]
 
-    return {
-        "project_root": str(root),
-        "files": sorted(files),
-        "directories": sorted(directories),
-        "git_repository": (root / ".git").exists(),
-        "python_project": any(
-            name in files
-            for name in (
-                "pyproject.toml",
-                "requirements.txt",
-                "setup.py",
-                "setup.cfg",
-            )
-        ),
-        "node_project": "package.json" in files,
-        "docker_project": (
-            "Dockerfile" in files
-            or "docker-compose.yml" in files
-            or "compose.yml" in files
-        ),
-    }
+    if not project_types:
+        return success(
+            {"project_types": [], "markers": markers},
+            message="No recognizable project markers found",
+        )
+
+    return success(
+        {"project_types": project_types, "markers": markers},
+        message="Detected project types: " + ", ".join(project_types),
+    )
 
 
-def detect_project_type(
-    path: str = ".",
-) -> list[str]:
-    """
-    Detect likely project types from common project files.
-    """
-    root = _resolve_path(path)
+def get_project_metadata(path: str = ".") -> dict[str, Any]:
+    """Extract compact metadata from common project configuration files.
 
-    if not root.exists():
-        return [f"Error: path does not exist: {path}"]
+    Only selected fields are extracted; full configuration file
+    contents are never included. A single corrupt or partial config
+    file is skipped and noted in the message — it never fails the
+    call. The call only fails when the path itself is invalid.
 
-    types: list[str] = []
+    Args:
+        path: Directory to inspect. Defaults to the current directory.
 
-    markers = {
-        "Python": [
-            "pyproject.toml",
-            "requirements.txt",
-            "setup.py",
-        ],
-        "Node.js": ["package.json"],
-        "Rust": ["Cargo.toml"],
-        "Go": ["go.mod"],
-        "Java": ["pom.xml", "build.gradle"],
-        "C/C++": ["CMakeLists.txt"],
-        "Docker": ["Dockerfile"],
-    }
-
-    for project_type, files in markers.items():
-        if any((root / filename).exists() for filename in files):
-            types.append(project_type)
-
-    return types or ["Unknown"]
-
-
-def get_project_metadata(
-    path: str = ".",
-) -> dict[str, Any]:
-    """
-    Return metadata from common project configuration files.
+    Returns:
+        A success/failure envelope. On success, data is
+        {"path": str, "name": str|None, "version": str|None,
+        "description": str|None, "dependencies": [str...],
+        "dev_dependencies": [str...], "scripts": dict|None,
+        "requires_python": str|None, "go_version": str|None,
+        "project_types": [str...], "sources": {str: bool},
+        "truncated": bool}. sources reports which config files were
+        found; dependencies and dev_dependencies are capped at
+        PROJECT_MAX_DEPENDENCIES entries with truncated set when cut.
     """
     root = _resolve_path(path)
+
+    try:
+        root = _require_dir(root)
+    except ValueError as exc:
+        return failure(str(exc))
 
     metadata: dict[str, Any] = {
-        "root": str(root),
-        "project_types": detect_project_type(path),
+        "path": str(root),
+        "name": None,
+        "version": None,
+        "description": None,
+        "dependencies": [],
+        "dev_dependencies": [],
+        "scripts": None,
+        "requires_python": None,
+        "go_version": None,
+        "project_types": detect_project_type(str(root))["data"]["project_types"],
+        "sources": {
+            "pyproject.toml": False,
+            "package.json": False,
+            "requirements.txt": False,
+            "Cargo.toml": False,
+            "go.mod": False,
+        },
+        "truncated": False,
     }
 
-    for filename in [
-        "pyproject.toml",
-        "package.json",
-        "Cargo.toml",
-        "go.mod",
-    ]:
-        file_path = root / filename
+    notes: list[str] = []
 
-        if file_path.exists():
-            try:
-                content = file_path.read_text(
+    pyproject = root / "pyproject.toml"
+    metadata["sources"]["pyproject.toml"] = pyproject.exists()
+    if pyproject.exists():
+        try:
+            with pyproject.open("rb") as handle:
+                config = tomllib.load(handle)
+            project = config.get("project", {})
+            metadata["name"] = metadata["name"] or project.get("name")
+            metadata["version"] = metadata["version"] or project.get("version")
+            metadata["description"] = (
+                metadata["description"] or project.get("description")
+            )
+            metadata["requires_python"] = (
+                metadata["requires_python"] or project.get("requires-python")
+            )
+            if metadata["scripts"] is None:
+                scripts = project.get("scripts")
+                if isinstance(scripts, dict):
+                    metadata["scripts"] = dict(scripts)
+                else:
+                    poetry_scripts = (
+                        config.get("tool", {})
+                        .get("poetry", {})
+                        .get("scripts")
+                    )
+                    if isinstance(poetry_scripts, dict):
+                        metadata["scripts"] = dict(poetry_scripts)
+            deps = project.get("dependencies")
+            if isinstance(deps, list) and not metadata["dependencies"]:
+                metadata["dependencies"] = list(deps)
+            if not metadata["dev_dependencies"]:
+                dev_deps: list[str] = []
+                optional = project.get("optional-dependencies")
+                if isinstance(optional, dict):
+                    dev_deps.extend(optional.get("dev", []) or [])
+                groups = config.get("dependency-groups")
+                if isinstance(groups, dict):
+                    dev_deps.extend(groups.get("dev", []) or [])
+                metadata["dev_dependencies"] = dev_deps
+        except (OSError, ValueError) as exc:
+            notes.append(f"pyproject.toml: {exc}")
+
+    package_json = root / "package.json"
+    metadata["sources"]["package.json"] = package_json.exists()
+    if package_json.exists():
+        try:
+            package = json.loads(package_json.read_text(encoding="utf-8"))
+            metadata["name"] = metadata["name"] or package.get("name")
+            metadata["version"] = metadata["version"] or package.get("version")
+            metadata["description"] = (
+                metadata["description"] or package.get("description")
+            )
+            if not metadata["dependencies"]:
+                deps = package.get("dependencies")
+                if isinstance(deps, dict):
+                    metadata["dependencies"] = [
+                        f"{name}@{version}"
+                        for name, version in deps.items()
+                    ]
+            if not metadata["dev_dependencies"]:
+                dev_deps = package.get("devDependencies")
+                if isinstance(dev_deps, dict):
+                    metadata["dev_dependencies"] = [
+                        f"{name}@{version}"
+                        for name, version in dev_deps.items()
+                    ]
+            if metadata["scripts"] is None:
+                scripts = package.get("scripts")
+                if isinstance(scripts, dict):
+                    metadata["scripts"] = dict(scripts)
+        except (OSError, ValueError) as exc:
+            notes.append(f"package.json: {exc}")
+
+    requirements_txt = root / "requirements.txt"
+    metadata["sources"]["requirements.txt"] = requirements_txt.exists()
+    if requirements_txt.exists():
+        try:
+            lines = [
+                line.strip()
+                for line in requirements_txt.read_text(
                     encoding="utf-8"
-                )
+                ).splitlines()
+            ]
+            lines = [
+                line for line in lines
+                if line and not line.startswith("#")
+            ]
+            if not metadata["dependencies"]:
+                metadata["dependencies"] = lines
+        except (OSError, ValueError) as exc:
+            notes.append(f"requirements.txt: {exc}")
 
-                metadata[filename] = content
+    cargo_toml = root / "Cargo.toml"
+    metadata["sources"]["Cargo.toml"] = cargo_toml.exists()
+    if cargo_toml.exists():
+        try:
+            with cargo_toml.open("rb") as handle:
+                cargo_config = tomllib.load(handle)
+            package = cargo_config.get("package", {})
+            metadata["name"] = metadata["name"] or package.get("name")
+            metadata["version"] = metadata["version"] or package.get("version")
+        except (OSError, ValueError) as exc:
+            notes.append(f"Cargo.toml: {exc}")
 
-            except Exception as exc:
-                metadata[filename] = f"Error: {exc}"
+    go_mod = root / "go.mod"
+    metadata["sources"]["go.mod"] = go_mod.exists()
+    if go_mod.exists():
+        try:
+            for line in go_mod.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("module ") and metadata["name"] is None:
+                    metadata["name"] = stripped[len("module "):].strip()
+                elif stripped.startswith("go ") and metadata["go_version"] is None:
+                    metadata["go_version"] = stripped[len("go "):].strip()
+        except (OSError, ValueError) as exc:
+            notes.append(f"go.mod: {exc}")
 
-    return metadata
+    for key in ("dependencies", "dev_dependencies"):
+        if len(metadata[key]) > PROJECT_MAX_DEPENDENCIES:
+            metadata[key] = metadata[key][:PROJECT_MAX_DEPENDENCIES]
+            metadata["truncated"] = True
 
+    message = (
+        f"Extracted metadata from "
+        f"{sum(metadata['sources'].values())} source file(s)"
+    )
+    if notes:
+        message += " (skipped: " + "; ".join(notes) + ")"
 
+    return success(metadata, message=message)
 # ============================================================
 # 7. GIT
 # ============================================================
