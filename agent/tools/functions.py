@@ -1005,10 +1005,14 @@ def find_files(
     """Find files under path using a pathlib glob pattern.
 
     Results are filtered so that no result path passes through an
-    ignored directory (IGNORED_DIRS) at any level; the requested root
-    itself is never filtered. Patterns that escape the root (e.g.
-    "../*.py") are supported but only results that resolve inside the
-    requested root are reported; out-of-root results are skipped.
+    ignored directory (IGNORED_DIRS) at any level — the check applies
+    to the path as traversed, so a symlink with an ignored name (e.g.
+    "draft_venv") is filtered even when its target lies elsewhere; the
+    requested root itself is never filtered. Patterns that escape the
+    root (e.g. "../*.py") are supported but only results that resolve
+    inside the requested root are reported; out-of-root results and
+    symlink loops are skipped. Results are deduplicated after path
+    resolution, so symlinks pointing at the same file yield one entry.
 
     Args:
         pattern: Glob pattern, e.g. "*.py", "**/*.py", "test_*.py".
@@ -1041,18 +1045,25 @@ def find_files(
         return failure(f"Failed to search files: {exc}")
 
     filtered: list[Path] = []
+    seen: set[str] = set()
     for item in found:
-        try:
-            resolved = item.resolve()
-        except OSError:
-            continue
-        if not resolved.is_relative_to(root):
+        if not item.is_relative_to(root):
             continue
         if any(
             part in IGNORED_DIRS
-            for part in resolved.relative_to(root).parts
+            for part in item.relative_to(root).parts
         ):
             continue
+        try:
+            resolved = item.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if not resolved.is_relative_to(root):
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
         filtered.append(resolved)
 
     files = sorted(
