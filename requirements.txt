@@ -2,3 +2,4 @@ python-dotenv
 azure-ai-projects
 azure-identity
 httpx
+textual
