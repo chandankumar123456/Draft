@@ -1,75 +1,5 @@
 from azure.ai.projects.models import FunctionTool
 
-from tools.functions import (
-    # Filesystem
-    list_files,
-    list_directory_tree,
-    read_file,
-    write_file,
-    get_file_info,
-    create_directory,
-    delete_file,
-    delete_directory,
-    move_file,
-    copy_file,
-
-    # Code Search
-    search_code,
-    grep,
-    find_files,
-    find_symbol,
-    find_references,
-    get_file_symbols,
-
-    # Code Editing
-    apply_patch,
-    insert_text,
-    replace_text,
-    delete_lines,
-
-    # Execution
-    run_command,
-    run_python,
-    run_tests,
-    check_syntax,
-    lint_project,
-    typecheck_project,
-
-    # Environment
-    get_current_directory,
-    get_project_root,
-    get_environment,
-    get_python_version,
-    which_command,
-
-    # Project Understanding
-    inspect_project,
-    detect_project_type,
-    get_project_metadata,
-
-    # Git
-    git_status,
-    git_diff,
-    git_log,
-    git_show,
-    git_branch,
-    git_branch_create,
-    git_branch_switch,
-    git_add,
-    git_commit,
-    git_stash,
-    git_stash_pop,
-
-    # Web
-    search_web,
-    fetch_url,
-
-    # Utilities
-    get_current_time,
-    calculate,
-    generate_uuid,
-)
-
 
 def make_tool(
     name: str,
@@ -134,7 +64,8 @@ read_file_tool = make_tool(
     "read_file",
     "Read the contents of a text file, optionally restricting the returned line range. Returns a structured result "
     '{"success", "data", "message", "error"}; on success data.content holds 1-based numbered lines '
-    '("<n>: <text>"). start_line/end_line are inclusive.',
+    '("<n>: <text>"). start_line/end_line are inclusive. Content is truncated with a "truncated" '
+    "flag when the file exceeds the read limit.",
     {
         "path": {
             "type": "string",
@@ -284,11 +215,12 @@ search_code_tool = make_tool(
     {
         "query": {
             "type": "string",
-            "description": "Text to search for.",
+            "minLength": 1,
+            "description": "Text to search for. Must not be empty.",
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search. Optional; defaults to the current directory.",
+            "description": "Directory to search in. Searches recursively. Optional; defaults to the current directory.",
         },
         "extensions": {
             "type": ["array", "null"],
@@ -320,7 +252,7 @@ grep_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search. Optional; defaults to the current directory.",
+            "description": "Directory to search in. Searches recursively. Optional; defaults to the current directory.",
         },
         "ignore_case": {
             "type": "boolean",
@@ -346,7 +278,7 @@ find_files_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Root directory to search. Optional; defaults to the current directory.",
+            "description": "Directory to search in. Searches recursively. Optional; defaults to the current directory.",
         },
     },
     ["pattern"],
@@ -365,7 +297,7 @@ find_symbol_tool = make_tool(
         },
         "path": {
             "type": "string",
-            "description": "Directory or file to search. Optional; defaults to the current directory.",
+            "description": "Directory to search in. Searches recursively. Optional; defaults to the current directory.",
         },
     },
     ["symbol"],

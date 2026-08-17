@@ -1387,7 +1387,6 @@ def _git_apply_failure(
     error = result["error"] or ""
     stderr = result["stderr"] or ""
     stdout = result["stdout"] or ""
-    combined = error + " " + stderr
 
     if (
         "Command not found" in error
@@ -3242,10 +3241,9 @@ def _calc_eval(node: ast.AST, depth: int) -> int | float:
         return func(*args)
 
     if isinstance(node, ast.Name):
-        value = CALC_NAMES.get(node.id)
-        if value is None:
-            raise ValueError(f"Unknown name: {node.id}")
-        return value
+        if node.id not in ("pi", "e", "inf", "nan"):
+            raise ValueError(f"Unknown constant: {node.id}")
+        return CALC_NAMES[node.id]
 
     raise ValueError(
         f"Unsupported expression construct: {type(node).__name__}"
@@ -3325,6 +3323,9 @@ def calculate(
         result = _calc_eval(tree, 0)
     except (ZeroDivisionError, ValueError, OverflowError, TypeError) as exc:
         return failure(str(exc))
+
+    if not isinstance(result, (int, float)):
+        return failure("Expression did not evaluate to a number")
 
     return success(
         {

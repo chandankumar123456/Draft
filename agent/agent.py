@@ -104,11 +104,22 @@ while True:
                     "error": f"Tool '{item.name}' failed: {str(exc)}",
                 }
 
+        try:
+            serialized = json.dumps(result)
+        except (TypeError, ValueError):
+            result = {
+                "success": False,
+                "data": None,
+                "message": None,
+                "error": f"Tool '{item.name}' produced a non-serializable result",
+            }
+            serialized = json.dumps(result)
+
         input_list.append(
             FunctionCallOutput(
                 type="function_call_output",
                 call_id=item.call_id,
-                output=json.dumps(result),
+                output=serialized,
             )
         )
             
