@@ -30,12 +30,40 @@ Screen {
 /* ── Project Explorer (Left Panel) ──────────────────────── */
 
 #project-explorer {
-    width: 22%;
+    width: 18%;
     min-width: 20;
     max-width: 40;
     height: 100%;
     border-right: tall #333344;
     background: #0f0f1a;
+}
+
+#project-explorer .project-header {
+    height: 1;
+    width: 100%;
+}
+
+#project-explorer .project-header #project-title {
+    width: 1fr;
+}
+
+#project-explorer .project-header #project-toggle {
+    width: 3;
+    min-width: 3;
+    height: 1;
+    padding: 0;
+    margin: 0;
+    content-align: center middle;
+    border: none;
+    background: transparent;
+    color: #8888cc;
+}
+
+#project-explorer .project-header #project-toggle:hover,
+#project-explorer .project-header #project-toggle:focus {
+    color: #6688cc;
+    background: #16213e;
+    border: none;
 }
 
 #project-explorer #project-tree {
@@ -273,6 +301,10 @@ Input:focus {
 
 Button {
     min-width: 16;
+}
+
+Button:hover {
+    border: tall #6688cc;
 }
 
 Button.-success {
