@@ -54,6 +54,7 @@ from events import (
     AgentCompleted,
     AgentFailed,
     AgentMessage,
+    AgentMessageChunk,
     AgentPhaseChanged,
     AgentStarted,
     ApprovalRequested,
@@ -74,6 +75,7 @@ from runtime import AgentRuntime
 
 from tui.messages import RuntimeEventReceived
 from tui.screens import (
+    ConfigModal,
     DiffScreen,
     GitScreen,
     TestDashboardScreen,
@@ -161,7 +163,7 @@ class DraftApp(App):
         Binding("ctrl+c", "quit_app", "Quit"),
     ]
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, model: str | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._event_bus = EventBus()
         self._runtime: AgentRuntime | None = None
@@ -169,10 +171,11 @@ class DraftApp(App):
         self._project_visible = True
 
         # Detect project info
-        self._model = os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini")
+        self._model = model or os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini")
         self._branch = self._detect_branch()
         self._project_name = self._detect_project_name()
         self._last_esc_time: float = 0.0
+        self._current_status: str = "IDLE"
 
     def _detect_branch(self) -> str:
         try:
@@ -256,8 +259,13 @@ class DraftApp(App):
         except Exception:
             pass
 
-        # Initialize agent in background
-        self._init_agent()
+        # Check required configuration
+        endpoint = os.getenv("PROJECT_ENDPOINT", "").strip()
+        model = os.getenv("MODEL_DEPLOYMENT", "").strip()
+        if not endpoint or not model:
+            self.action_show_config(mandatory=True)
+        else:
+            self._init_agent()
 
     def _init_agent(self) -> None:
         """Initialize the agent runtime in a background worker."""
@@ -422,6 +430,9 @@ class DraftApp(App):
         if isinstance(event, UserMessage):
             workspace.write_user_message(event.content)
 
+        elif isinstance(event, AgentMessageChunk):
+            workspace.write_agent_chunk(event.delta, event.accumulated)
+
         elif isinstance(event, AgentMessage):
             workspace.write_agent_message(event.content)
 
@@ -542,21 +553,25 @@ class DraftApp(App):
         elif isinstance(event, ApprovalRequested):
             self._show_approval(event)
 
-    # ── Prompt Handling ───────────────────────────────────────
+    # ── Prompt & Slash Command Handling ────────────────────────
 
     def on_prompt_input_submitted(
         self, message: PromptInput.Submitted
     ) -> None:
-        """Handle prompt submission."""
-        prompt = message.value
+        """Handle prompt or slash command submission."""
+        prompt = message.value.strip()
 
         if not prompt:
+            return
+
+        if prompt.startswith("/"):
+            self._handle_slash_command(prompt)
             return
 
         if self._runtime is None:
             workspace = self.query_one("#agent-workspace", AgentWorkspace)
             workspace.write_system_message(
-                "Agent not yet initialized. Please wait...",
+                "Agent not yet initialized. Please configure endpoint/model or wait...",
                 level="warning",
             )
             return
@@ -580,6 +595,138 @@ class DraftApp(App):
             exclusive=True,
             group="agent-task",
         )
+
+    def _handle_slash_command(self, cmd_line: str) -> None:
+        """Execute interactive slash commands."""
+        parts = cmd_line.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        workspace = self.query_one("#agent-workspace", AgentWorkspace)
+
+        if cmd == "/new":
+            if self._runtime is not None:
+                self._runtime.new_conversation()
+            else:
+                workspace.write_system_message(
+                    "Started a new conversation context.", level="info"
+                )
+
+        elif cmd == "/clear":
+            workspace.log.clear()
+
+        elif cmd == "/help":
+            workspace.write_slash_help()
+
+        elif cmd == "/status":
+            iter_count = self._runtime.state.iteration if self._runtime else 0
+            tc_count = self._runtime.state.tool_call_count if self._runtime else 0
+            fm_count = self._runtime.state.files_modified if self._runtime else 0
+            workspace.write_status_summary(
+                status=self._current_status,
+                model=self._model,
+                branch=self._branch,
+                project=self._project_name,
+                iterations=iter_count,
+                tool_calls=tc_count,
+                files_modified=fm_count,
+            )
+
+        elif cmd == "/config":
+            if arg:
+                # e.g. /config https://... or /config model=...
+                workspace.write_system_message(
+                    "Use /endpoint <url> or /model <name> to change settings.",
+                    level="info",
+                )
+            else:
+                workspace.write_config_summary(
+                    endpoint=os.getenv("PROJECT_ENDPOINT", ""),
+                    model=self._model,
+                )
+
+        elif cmd == "/endpoint":
+            if arg:
+                self._update_endpoint(arg)
+            else:
+                self.action_show_config()
+
+        elif cmd == "/model":
+            if arg:
+                self._update_model(arg)
+            else:
+                self.action_show_config()
+
+        elif cmd in ("/exit", "/quit"):
+            self.action_quit_app()
+
+        else:
+            workspace.write_system_message(
+                f"Unknown slash command '{cmd}'. Type /help for available commands.",
+                level="warning",
+            )
+
+    def _update_endpoint(self, new_endpoint: str) -> None:
+        """Update endpoint at runtime and reinitialize."""
+        workspace = self.query_one("#agent-workspace", AgentWorkspace)
+        os.environ["PROJECT_ENDPOINT"] = new_endpoint
+        if self._runtime is not None:
+            self._runtime.reconfigure(endpoint=new_endpoint)
+        else:
+            self._init_agent()
+        workspace.write_system_message(
+            f"Project Endpoint updated: {new_endpoint}", level="info"
+        )
+
+    def _update_model(self, new_model: str) -> None:
+        """Update model deployment at runtime and reinitialize."""
+        workspace = self.query_one("#agent-workspace", AgentWorkspace)
+        self._model = new_model
+        try:
+            header = self.query_one("#status-header", StatusHeader)
+            header.model = new_model
+        except Exception:
+            pass
+        os.environ["MODEL_DEPLOYMENT"] = new_model
+        if self._runtime is not None:
+            self._runtime.reconfigure(model=new_model)
+        else:
+            self._init_agent()
+        workspace.write_system_message(
+            f"Model Deployment updated: {new_model}", level="info"
+        )
+
+    def action_show_config(self, mandatory: bool = False) -> None:
+        """Display configuration dialog modal."""
+        modal = ConfigModal(
+            endpoint=os.getenv("PROJECT_ENDPOINT", ""),
+            model=self._model,
+            can_cancel=not mandatory,
+        )
+        self.push_screen(modal, callback=self._on_config_modal_closed)
+
+    def _on_config_modal_closed(self, result: tuple[str, str] | None) -> None:
+        """Handle configuration modal result."""
+        if result is not None:
+            endpoint, model = result
+            self._model = model
+            try:
+                header = self.query_one("#status-header", StatusHeader)
+                header.model = model
+            except Exception:
+                pass
+            os.environ["PROJECT_ENDPOINT"] = endpoint
+            os.environ["MODEL_DEPLOYMENT"] = model
+
+            workspace = self.query_one("#agent-workspace", AgentWorkspace)
+            if self._runtime is not None:
+                self._runtime.reconfigure(model=model, endpoint=endpoint)
+            else:
+                self._init_agent()
+            workspace.write_system_message(
+                f"Configuration saved! Endpoint: {endpoint} | Model: {model}",
+                level="info",
+            )
 
     # ── Approval ──────────────────────────────────────────────
 

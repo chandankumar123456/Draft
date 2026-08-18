@@ -149,6 +149,13 @@ class AgentMessage(RuntimeEvent):
 
 
 @dataclass(frozen=True)
+class AgentMessageChunk(RuntimeEvent):
+    """An incremental streaming text chunk from the agent."""
+    delta: str = ""
+    accumulated: str = ""
+
+
+@dataclass(frozen=True)
 class SystemMessage(RuntimeEvent):
     """An internal system-level message (errors, info)."""
     content: str = ""

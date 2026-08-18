@@ -28,7 +28,7 @@ from openai.types.responses.response_input_param import (
     ResponseInputParam,
 )
 
-from credential import openai_client, project_client
+from credential import get_openai_client, get_project_client, save_config
 from dispatcher import ToolDispatcher
 from event_bus import EventBus
 from events import (
@@ -37,6 +37,7 @@ from events import (
     AgentFailed,
     AgentIterationStarted,
     AgentMessage,
+    AgentMessageChunk,
     AgentPhase,
     AgentPhaseChanged,
     AgentStarted,
@@ -61,6 +62,9 @@ class AgentRuntime:
     model : str | None
         Model deployment name.  Read from ``MODEL_DEPLOYMENT``
         environment variable if not provided.
+    endpoint : str | None
+        Project endpoint URL. Read from ``PROJECT_ENDPOINT``
+        environment variable if not provided.
     approval_enabled : bool
         Whether risky tools require human approval.
     """
@@ -69,10 +73,12 @@ class AgentRuntime:
         self,
         event_bus: EventBus,
         model: str | None = None,
+        endpoint: str | None = None,
         approval_enabled: bool = False,
     ) -> None:
         self.event_bus = event_bus
         self.model = model or os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini")
+        self.endpoint = endpoint or os.getenv("PROJECT_ENDPOINT", "")
         self.dispatcher = ToolDispatcher(
             event_bus=event_bus,
             approval_enabled=approval_enabled,
@@ -93,13 +99,23 @@ class AgentRuntime:
         Must be called before ``run_task``.  Separated from
         ``__init__`` so the TUI can show a loading state.
         """
+        p_client = get_project_client(self.endpoint)
+        o_client = get_openai_client(self.endpoint)
+
+        if p_client is None or o_client is None:
+            self.event_bus.emit_threadsafe(SystemMessage(
+                content="Azure AI project endpoint is not configured.",
+                level="warning",
+            ))
+            return
+
         self.event_bus.emit_threadsafe(SystemMessage(
             content=f"Initializing Draft agent (model: {self.model})...",
             level="info",
         ))
 
         try:
-            self._agent = project_client.agents.create_version(
+            self._agent = p_client.agents.create_version(
                 agent_name="Draft-Main-Agent",
                 definition=PromptAgentDefinition(
                     model=self.model,
@@ -108,7 +124,7 @@ class AgentRuntime:
                 ),
             )
 
-            self._conversation = openai_client.conversations.create()
+            self._conversation = o_client.conversations.create()
             self._input_list = []
 
             self.event_bus.emit_threadsafe(SystemMessage(
@@ -122,11 +138,40 @@ class AgentRuntime:
             ))
             raise
 
+    def new_conversation(self) -> None:
+        """Create a fresh conversation context."""
+        o_client = get_openai_client(self.endpoint)
+        if o_client is not None:
+            try:
+                self._conversation = o_client.conversations.create()
+            except Exception:
+                pass
+        self._input_list = []
+        self.state = AgentState()
+        self.event_bus.emit_threadsafe(SystemMessage(
+            content="Started a new conversation context.",
+            level="info",
+        ))
+
+    def reconfigure(
+        self, model: str | None = None, endpoint: str | None = None
+    ) -> None:
+        """Update model or endpoint at runtime and reinitialize."""
+        if model:
+            self.model = model
+        if endpoint:
+            self.endpoint = endpoint
+
+        save_config(endpoint=self.endpoint, model=self.model)
+        self.cleanup()
+        self.initialize()
+
     def cleanup(self) -> None:
         """Delete the Azure agent.  Safe to call multiple times."""
-        if self._agent is not None:
+        p_client = get_project_client(self.endpoint)
+        if self._agent is not None and p_client is not None:
             try:
-                project_client.agents.delete_version(
+                p_client.agents.delete_version(
                     agent_name=self._agent.name,
                     agent_version=self._agent.version,
                 )
@@ -203,14 +248,30 @@ class AgentRuntime:
                 tool_calls=self.state.tool_call_count,
             ))
 
-    def _execute_loop(self, prompt: str) -> None:
-        """The core response → tool-call → result loop.
+    def _emit_response_text(self, text: str) -> None:
+        """Emit progressive chunks and the final AgentMessage."""
+        if not text:
+            return
+        chunk_size = max(1, min(len(text), 24))
+        accumulated = ""
+        for i in range(0, len(text), chunk_size):
+            if self._cancel_event.is_set():
+                return
+            delta = text[i : i + chunk_size]
+            accumulated += delta
+            self.event_bus.emit_threadsafe(
+                AgentMessageChunk(delta=delta, accumulated=accumulated)
+            )
+        self.event_bus.emit_threadsafe(AgentMessage(content=text))
 
-        Extracted from the original ``agent.py`` while preserving
-        the exact same Azure/OpenAI API calling pattern.
-        """
+    def _execute_loop(self, prompt: str) -> None:
+        """The core response → tool-call → result loop."""
+        o_client = get_openai_client(self.endpoint)
+        if o_client is None:
+            raise RuntimeError("OpenAI client not initialized.")
+
         # Send user message to conversation
-        openai_client.conversations.items.create(
+        o_client.conversations.items.create(
             conversation_id=self._conversation.id,
             items=[{
                 "type": "message",
@@ -220,7 +281,7 @@ class AgentRuntime:
         )
 
         # Get initial response
-        response = openai_client.responses.create(
+        response = o_client.responses.create(
             conversation=self._conversation.id,
             extra_body={
                 "agent_reference": {
@@ -231,8 +292,8 @@ class AgentRuntime:
             input=self._input_list,
         )
 
-        if response.status == "failed":
-            raise RuntimeError(f"Response failed: {response.error}")
+        if getattr(response, "status", "") == "failed":
+            raise RuntimeError(f"Response failed: {getattr(response, 'error', 'Unknown error')}")
 
         # Tool call loop — keep iterating while there are function calls
         max_iterations = 50  # Safety limit
@@ -259,11 +320,12 @@ class AgentRuntime:
             tool_outputs: list[FunctionCallOutput] = []
             has_function_calls = False
 
-            for item in response.output:
+            output_items = getattr(response, "output", []) or []
+            for item in output_items:
                 if self._cancel_event.is_set():
                     return
 
-                if item.type != "function_call":
+                if getattr(item, "type", "") != "function_call":
                     continue
 
                 has_function_calls = True
@@ -272,13 +334,12 @@ class AgentRuntime:
                 # Parse arguments
                 try:
                     arguments = json.loads(item.arguments)
-                except json.JSONDecodeError as exc:
+                except (json.JSONDecodeError, AttributeError) as exc:
                     result = {
                         "success": False,
                         "data": None,
                         "message": None,
-                        "error": f"Invalid JSON arguments for tool "
-                                 f"'{item.name}': {str(exc)}",
+                        "error": f"Invalid JSON arguments for tool: {str(exc)}",
                     }
                     arguments = {}
                 else:
@@ -311,7 +372,7 @@ class AgentRuntime:
                         "success": False,
                         "data": None,
                         "message": None,
-                        "error": f"Tool '{item.name}' produced a "
+                        "error": f"Tool '{getattr(item, 'name', '')}' produced a "
                                  f"non-serializable result",
                     }
                     serialized = json.dumps(result)
@@ -326,9 +387,7 @@ class AgentRuntime:
             if not has_function_calls:
                 # Extract and emit the agent's text response
                 if hasattr(response, "output_text") and response.output_text:
-                    self.event_bus.emit_threadsafe(AgentMessage(
-                        content=response.output_text,
-                    ))
+                    self._emit_response_text(response.output_text)
                 break
 
             # Send tool results back and get next response
@@ -340,9 +399,8 @@ class AgentRuntime:
             ))
             self.state.phase = AgentPhase.EXECUTION
 
-            response = openai_client.responses.create(
+            response = o_client.responses.create(
                 input=self._input_list,
-                # previous_response_id=response.id,
                 conversation=self._conversation.id,
                 extra_body={
                     "agent_reference": {
@@ -352,18 +410,17 @@ class AgentRuntime:
                 },
             )
 
-            if response.status == "failed":
-                raise RuntimeError(f"Response failed: {response.error}")
+            if getattr(response, "status", "") == "failed":
+                raise RuntimeError(f"Response failed: {getattr(response, 'error', 'Unknown error')}")
 
             # Check if this response is text-only (no more tool calls)
+            output_items = getattr(response, "output", []) or []
             has_more_calls = any(
-                item.type == "function_call" for item in response.output
+                getattr(item, "type", "") == "function_call" for item in output_items
             )
             if not has_more_calls:
                 if hasattr(response, "output_text") and response.output_text:
-                    self.event_bus.emit_threadsafe(AgentMessage(
-                        content=response.output_text,
-                    ))
+                    self._emit_response_text(response.output_text)
                 break
 
         # Clear input list for next task

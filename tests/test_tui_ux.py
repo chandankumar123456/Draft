@@ -65,10 +65,11 @@ async def test_header_hamburger_toggles_project_explorer(app: DraftApp) -> None:
 
 @pytest.mark.anyio
 async def test_prompt_input_focus_and_placeholder(app: DraftApp) -> None:
-    """PromptInput has correct placeholder and receives initial focus."""
+    """PromptInput receives initial focus and has proper placeholder."""
     async with app.run_test(size=(100, 30)) as pilot:
-        inp = app.query_one("#prompt-input", PromptInput).query_one("#prompt-input", Input)
-        assert "Message the agent..." in inp.placeholder
+        prompt_widget = app.query_one("#prompt-input", PromptInput)
+        inp = prompt_widget.query_one("#prompt-input")
+        assert "Message the agent..." in prompt_widget.placeholder
         assert inp.has_focus is True
 
 
@@ -77,26 +78,23 @@ async def test_prompt_history_navigation(app: DraftApp) -> None:
     """Up and Down arrow keys navigate prompt history."""
     async with app.run_test(size=(100, 30)) as pilot:
         prompt_widget = app.query_one("#prompt-input", PromptInput)
-        inp = prompt_widget.query_one("#prompt-input", Input)
 
-        inp.value = "first message"
-        prompt_widget.on_input_submitted(Input.Submitted(inp, "first message"))
+        prompt_widget.submit_text("first message")
         await pilot.pause()
 
-        inp.value = "second message"
-        prompt_widget.on_input_submitted(Input.Submitted(inp, "second message"))
+        prompt_widget.submit_text("second message")
         await pilot.pause()
 
-        assert inp.value == ""
+        assert prompt_widget.value == ""
 
         prompt_widget.navigate_history(-1)
-        assert inp.value == "second message"
+        assert prompt_widget.value == "second message"
 
         prompt_widget.navigate_history(-1)
-        assert inp.value == "first message"
+        assert prompt_widget.value == "first message"
 
         prompt_widget.navigate_history(1)
-        assert inp.value == "second message"
+        assert prompt_widget.value == "second message"
 
 
 @pytest.mark.anyio

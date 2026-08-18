@@ -108,7 +108,8 @@ class AgentWorkspace(Widget):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._tool_calls: dict[str, str] = {}
-        """call_id → tool_name for terminal-state rendering."""
+        self._streaming_active: bool = False
+        self._streaming_text: str = ""
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -147,17 +148,82 @@ class AgentWorkspace(Widget):
 
     def write_user_message(self, content: str) -> None:
         """Display a user message."""
-        self.log.write(
-            f"\n[bold green]👤 USER[/bold green]\n"
-            f"  [green]> {escape(content)}[/green]"
-        )
+        self._streaming_active = False
+        self.log.write(f"\n[bold green]👤 USER[/bold green]")
+        for line in content.splitlines():
+            self.log.write(f"[bold white]{escape(line)}[/bold white]")
+
+    def write_agent_chunk(self, delta: str, accumulated: str = "") -> None:
+        """Progressively stream agent response text into the log."""
+        self.stop_thinking()
+        if not self._streaming_active:
+            self._streaming_active = True
+            self._streaming_text = ""
+            self.log.write("\n[bold cyan]🤖 AGENT[/bold cyan]")
+
+        self._streaming_text += delta
+        self.log.write(escape(delta))
 
     def write_agent_message(self, content: str) -> None:
-        """Display an agent response."""
+        """Display an agent response or finalize active stream."""
         self.stop_thinking()
+        if self._streaming_active:
+            self._streaming_active = False
+            self._streaming_text = ""
+        else:
+            self.log.write(f"\n[bold cyan]🤖 AGENT[/bold cyan]")
+            for line in content.splitlines():
+                self.log.write(f"[white]{escape(line)}[/white]")
+
+    def write_slash_help(self) -> None:
+        """Display help table for available slash commands."""
+        commands = [
+            ("/new", "Start a fresh conversation/context"),
+            ("/clear", "Clear the current workspace log"),
+            ("/help", "Show this slash commands help message"),
+            ("/status", "Display agent and runtime status"),
+            ("/config", "View current endpoint and model configuration"),
+            ("/endpoint [url]", "Change the Azure AI project endpoint"),
+            ("/model [name]", "Change the model deployment name"),
+            ("/exit", "Exit Draft Developer Cockpit"),
+        ]
         self.log.write(
-            f"\n[bold cyan]🤖 AGENT[/bold cyan]\n"
-            f"{escape(content)}"
+            "\n[bold cyan]Available Slash Commands[/bold cyan]\n"
+            f"[dim]{'─' * 50}[/dim]"
+        )
+        for cmd, desc in commands:
+            self.log.write(f"  [bold yellow]{cmd:<18}[/bold yellow] [dim]{desc}[/dim]")
+        self.log.write(f"[dim]{'─' * 50}[/dim]")
+
+    def write_status_summary(
+        self,
+        status: str,
+        model: str,
+        branch: str,
+        project: str,
+        iterations: int = 0,
+        tool_calls: int = 0,
+        files_modified: int = 0,
+    ) -> None:
+        """Display a structured status summary in the log."""
+        self.log.write(
+            "\n[bold cyan]Draft Cockpit Status[/bold cyan]\n"
+            f"  [bold]Status:[/bold]         {status}\n"
+            f"  [bold]Model:[/bold]          [yellow]{model}[/yellow]\n"
+            f"  [bold]Project:[/bold]        [cyan]{project}[/cyan]\n"
+            f"  [bold]Branch:[/bold]         [magenta]{branch or 'none'}[/magenta]\n"
+            f"  [bold]Iterations:[/bold]     {iterations}\n"
+            f"  [bold]Tool Calls:[/bold]     {tool_calls}\n"
+            f"  [bold]Files Modified:[/bold] {files_modified}"
+        )
+
+    def write_config_summary(self, endpoint: str, model: str) -> None:
+        """Display the active configuration summary."""
+        self.log.write(
+            "\n[bold cyan]Current Configuration[/bold cyan]\n"
+            f"  [bold]Project Endpoint:[/bold] [yellow]{endpoint or '(not set)'}[/yellow]\n"
+            f"  [bold]Model Deployment:[/bold] [green]{model or '(not set)'}[/green]\n"
+            "\n[dim]To update configuration: use /endpoint <url> or /model <name> or /config[/dim]"
         )
 
     def write_system_message(self, content: str, level: str = "info") -> None:
@@ -214,10 +280,7 @@ class AgentWorkspace(Widget):
         )
 
     def mark_tool_cancelled(self, call_id: str) -> None:
-        """Display a CANCELLED result block for a tool call.
-
-        Unknown call ids are ignored (no card was ever started).
-        """
+        """Display a CANCELLED result block for a tool call."""
         name = self._tool_calls.get(call_id)
         if name is None:
             return
@@ -229,23 +292,22 @@ class AgentWorkspace(Widget):
     # ── File / test events ──────────────────────────────────────
 
     def write_patch_applied(self, event: PatchApplied) -> None:
-        """Display a successful patch application."""
+        """Display a successful patch application with visual unified diff."""
         self.log.write(
-            f"\n[bold green]PATCH APPLIED[/bold green]\n"
-            f"[green]  {escape(event.path)}[/green]"
+            f"\n[bold green]PATCH APPLIED[/bold green]  [green]{escape(event.path)}[/green]"
         )
         if event.diff:
-            # Show truncated diff
-            lines = event.diff.split("\n")
-            for line in lines[:20]:
-                if line.startswith("+"):
-                    self.log.write(f"  [green]{escape(line)}[/green]")
+            for line in event.diff.split("\n"):
+                if line.startswith("+++") or line.startswith("---"):
+                    self.log.write(f"  [bold white]{escape(line)}[/bold white]")
+                elif line.startswith("@@"):
+                    self.log.write(f"  [bold cyan]{escape(line)}[/bold cyan]")
+                elif line.startswith("+"):
+                    self.log.write(f"  [bold green]{escape(line)}[/bold green]")
                 elif line.startswith("-"):
-                    self.log.write(f"  [red]{escape(line)}[/red]")
+                    self.log.write(f"  [bold red]{escape(line)}[/bold red]")
                 else:
                     self.log.write(f"  [dim]{escape(line)}[/dim]")
-            if len(lines) > 20:
-                self.log.write(f"  [dim]... ({len(lines) - 20} more lines)[/dim]")
 
     def write_test_completed(self, event: TestCompleted) -> None:
         """Display test results summary."""

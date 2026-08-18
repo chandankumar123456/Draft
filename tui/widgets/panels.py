@@ -10,12 +10,13 @@ from datetime import datetime
 from typing import Any
 
 from rich.markup import escape
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, DirectoryTree, Input, Static
+from textual.widgets import Button, DirectoryTree, Input, Static, TextArea
 
 # Add agent dir to path
 _agent_dir = os.path.join(
@@ -177,33 +178,258 @@ class ProjectExplorer(Widget):
 
 
 # ════════════════════════════════════════════════════════════════
-# PROMPT INPUT
+# PROMPT INPUT & SLASH COMMAND CATALOG
 # ════════════════════════════════════════════════════════════════
 
-class PromptInput(Widget):
-    """Bottom prompt bar for user input.
+SLASH_COMMANDS = [
+    ("/new", "Start a new conversation/context"),
+    ("/clear", "Clear current view/output log"),
+    ("/help", "Show available slash commands"),
+    ("/status", "Show current agent/runtime status"),
+    ("/config", "Show and modify configuration"),
+    ("/endpoint", "Change Azure project endpoint"),
+    ("/model", "Change model deployment name"),
+    ("/exit", "Exit the application"),
+]
 
-    Emits ``PromptSubmitted`` when the user presses Enter.
-    Supports prompt history navigation with Up/Down arrows.
+
+class SlashCommandCatalog(Widget):
+    """Full-featured slash command catalog popup menu with scrolling and highlight."""
+
+    DEFAULT_CSS = """
+    SlashCommandCatalog {
+        height: auto;
+        min-height: 4;
+        max-height: 12;
+        width: 100%;
+        display: none;
+        background: #141428;
+        border: tall #555588;
+        padding: 0 1;
+        margin-bottom: 0;
+    }
+    SlashCommandCatalog.-visible {
+        display: block;
+    }
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.matches: list[tuple[str, str]] = []
+        self.selected_index: int = 0
+        self.catalog_offset: int = 0
+        self.max_visible: int = 6
+
+    def filter_commands(self, text: str) -> bool:
+        """Filter commands dynamically. Returns True if catalog is visible."""
+        stripped = text.strip()
+        if not stripped.startswith("/"):
+            self.matches = []
+            self.selected_index = 0
+            self.catalog_offset = 0
+            self.remove_class("-visible")
+            return False
+
+        # Match command token before space
+        token = stripped.split()[0].lower()
+        if token == "/":
+            self.matches = list(SLASH_COMMANDS)
+        else:
+            self.matches = [
+                (cmd, desc) for cmd, desc in SLASH_COMMANDS
+                if cmd.lower().startswith(token)
+            ]
+
+        if not self.matches:
+            self.remove_class("-visible")
+            return False
+
+        # Keep selected index valid
+        if self.selected_index >= len(self.matches):
+            self.selected_index = max(0, len(self.matches) - 1)
+
+        self._adjust_scroll()
+        self.add_class("-visible")
+        self.refresh()
+        return True
+
+    def move_down(self) -> None:
+        if not self.matches:
+            return
+        self.selected_index = min(self.selected_index + 1, len(self.matches) - 1)
+        self._adjust_scroll()
+        self.refresh()
+
+    def move_up(self) -> None:
+        if not self.matches:
+            return
+        self.selected_index = max(0, self.selected_index - 1)
+        self._adjust_scroll()
+        self.refresh()
+
+    def _adjust_scroll(self) -> None:
+        if self.selected_index < self.catalog_offset:
+            self.catalog_offset = self.selected_index
+        elif self.selected_index >= self.catalog_offset + self.max_visible:
+            self.catalog_offset = self.selected_index - self.max_visible + 1
+
+    def get_selected(self) -> tuple[str, str] | None:
+        if self.matches and 0 <= self.selected_index < len(self.matches):
+            return self.matches[self.selected_index]
+        return None
+
+    def render(self) -> RenderableType:
+        if not self.matches:
+            return ""
+
+        lines = [
+            "[bold cyan]┌─ Slash Commands ───────────────────────────────────────────────────────────┐[/bold cyan]"
+        ]
+
+        if self.catalog_offset > 0:
+            lines.append("  [dim yellow]▲ (more commands above)[/dim yellow]")
+
+        visible = self.matches[self.catalog_offset : self.catalog_offset + self.max_visible]
+        for i, (cmd, desc) in enumerate(visible):
+            actual_idx = self.catalog_offset + i
+            if actual_idx == self.selected_index:
+                lines.append(
+                    f"  [bold yellow on #223366] ▶ {cmd:<12} [/bold yellow on #223366] [white on #223366]{desc:<48}[/white on #223366]"
+                )
+            else:
+                lines.append(
+                    f"    [cyan]{cmd:<12}[/cyan] [dim]{desc}[/dim]"
+                )
+
+        if self.catalog_offset + self.max_visible < len(self.matches):
+            lines.append("  [dim yellow]▼ (more commands below)[/dim yellow]")
+
+        lines.append(
+            "[bold cyan]└─ [dim]↑/↓ navigate • Enter select • Tab autocomplete • Esc close[/dim] ──────────┘[/bold cyan]"
+        )
+        return "\n".join(lines)
+
+
+class PromptTextArea(TextArea):
+    """Multiline editor with Enter to submit and Shift+Enter for newline."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "placeholder" not in kwargs:
+            kwargs["placeholder"] = "Message the agent... (Enter to send, Shift+Enter for newline, / for commands)"
+        if "theme" not in kwargs:
+            kwargs["theme"] = "vscode_dark"
+        super().__init__(**kwargs)
+        self.show_line_numbers = False
+        self.soft_wrap = True
+
+    def _get_prompt_input(self) -> PromptInput | None:
+        node = self.parent
+        while node is not None:
+            if isinstance(node, PromptInput):
+                return node
+            node = getattr(node, "parent", None)
+        return None
+
+    async def _on_key(self, event: events.Key) -> None:
+        p_input = self._get_prompt_input()
+        catalog_active = p_input is not None and p_input.is_catalog_visible
+
+        if event.key in ("shift+enter", "shift+return"):
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            if p_input:
+                p_input.update_catalog(self.text)
+            return
+
+        elif event.key in ("enter", "return"):
+            event.prevent_default()
+            event.stop()
+            if catalog_active and p_input is not None:
+                p_input.select_catalog_active()
+                return
+
+            prompt = self.text.strip()
+            if prompt:
+                if p_input:
+                    p_input.submit_text(prompt)
+            return
+
+        elif event.key == "up":
+            if catalog_active and p_input is not None:
+                event.prevent_default()
+                event.stop()
+                p_input.catalog_up()
+                return
+
+            if self.cursor_location[0] == 0:
+                if p_input and p_input.has_history:
+                    event.prevent_default()
+                    event.stop()
+                    p_input.navigate_history(-1)
+                    return
+
+        elif event.key == "down":
+            if catalog_active and p_input is not None:
+                event.prevent_default()
+                event.stop()
+                p_input.catalog_down()
+                return
+
+            doc_lines = self.document.line_count
+            if self.cursor_location[0] >= doc_lines - 1:
+                if p_input and p_input.has_history:
+                    event.prevent_default()
+                    event.stop()
+                    p_input.navigate_history(1)
+                    return
+
+        elif event.key == "tab":
+            if catalog_active and p_input is not None:
+                event.prevent_default()
+                event.stop()
+                p_input.autocomplete_catalog_active()
+                return
+
+        elif event.key == "escape":
+            if catalog_active and p_input is not None:
+                event.prevent_default()
+                event.stop()
+                p_input.close_catalog()
+                return
+
+        await super()._on_key(event)
+        if p_input:
+            p_input.update_catalog(self.text)
+
+
+class PromptInput(Widget):
+    """Bottom prompt bar for user input with live slash catalog and multiline editor."""
 
     DEFAULT_CSS = """
     PromptInput {
-        height: 3;
+        height: auto;
+        min-height: 4;
+        max-height: 18;
         width: 100%;
+        layout: vertical;
+        padding: 0;
     }
-    PromptInput #prompt-input {
+    PromptInput PromptTextArea {
+        height: auto;
+        min-height: 3;
+        max-height: 8;
         border: tall #444466;
         background: #1a1a2e;
-        color: #e0e0e0;
+        color: #ffffff;
     }
-    PromptInput #prompt-input:focus {
+    PromptInput PromptTextArea:focus {
         border: tall #6688cc;
     }
     """
 
     class Submitted(Message):
-        """The user submitted a prompt."""
+        """The user submitted a prompt or slash command."""
         def __init__(self, value: str) -> None:
             super().__init__()
             self.value = value
@@ -214,31 +440,159 @@ class PromptInput(Widget):
         self._history_idx: int = -1
 
     def compose(self) -> ComposeResult:
-        yield Input(
-            placeholder="Message the agent... (Press Enter to send, Esc Esc to stop)",
+        yield SlashCommandCatalog(id="slash-catalog")
+        yield PromptTextArea(
+            placeholder="Message the agent... (Enter to send, Shift+Enter for newline, / for commands)",
+            theme="vscode_dark",
             id="prompt-input",
         )
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        prompt = event.value.strip()
-        if prompt:
-            if not self._history or self._history[-1] != prompt:
-                self._history.append(prompt)
-            self._history_idx = len(self._history)
-            self.post_message(PromptInput.Submitted(prompt))
-            event.input.value = ""
+    def _get_text_area(self) -> PromptTextArea:
+        """Helper to get child PromptTextArea widget reliably."""
+        return self.query_one(PromptTextArea)
+
+    @property
+    def placeholder(self) -> str:
+        try:
+            return self._get_text_area().placeholder
+        except Exception:
+            return ""
+
+    @placeholder.setter
+    def placeholder(self, val: str) -> None:
+        try:
+            self._get_text_area().placeholder = val
+        except Exception:
+            pass
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Dynamically update command catalog whenever text changes (typing or backspacing)."""
+        self.update_catalog(event.text_area.text)
+
+    def update_catalog(self, text: str) -> None:
+        """Filter command catalog based on current text."""
+        try:
+            catalog = self.query_one("#slash-catalog", SlashCommandCatalog)
+            catalog.filter_commands(text)
+        except Exception:
+            pass
+
+    def update_suggestions(self, text: str) -> None:
+        """Alias for update_catalog."""
+        self.update_catalog(text)
+
+    @property
+    def is_catalog_visible(self) -> bool:
+        try:
+            catalog = self.query_one("#slash-catalog", SlashCommandCatalog)
+            return "-visible" in catalog.classes and bool(catalog.matches)
+        except Exception:
+            return False
+
+    @property
+    def current_suggestions(self) -> list[tuple[str, str]]:
+        try:
+            catalog = self.query_one("#slash-catalog", SlashCommandCatalog)
+            return catalog.matches
+        except Exception:
+            return []
+
+    def catalog_up(self) -> None:
+        try:
+            self.query_one("#slash-catalog", SlashCommandCatalog).move_up()
+        except Exception:
+            pass
+
+    def catalog_down(self) -> None:
+        try:
+            self.query_one("#slash-catalog", SlashCommandCatalog).move_down()
+        except Exception:
+            pass
+
+    def select_catalog_active(self) -> None:
+        """Select highlighted command from catalog."""
+        try:
+            catalog = self.query_one("#slash-catalog", SlashCommandCatalog)
+            sel = catalog.get_selected()
+            if sel:
+                cmd, _ = sel
+                self.close_catalog()
+                if cmd in ("/endpoint", "/model"):
+                    ta = self._get_text_area()
+                    ta.text = cmd + " "
+                    ta.cursor_location = (0, len(ta.text))
+                else:
+                    self.submit_text(cmd)
+        except Exception:
+            pass
+
+    def autocomplete_catalog_active(self) -> None:
+        """Autocomplete highlighted command name into input with trailing space."""
+        try:
+            catalog = self.query_one("#slash-catalog", SlashCommandCatalog)
+            sel = catalog.get_selected()
+            if sel:
+                cmd, _ = sel
+                ta = self._get_text_area()
+                ta.text = cmd + " "
+                ta.cursor_location = (0, len(ta.text))
+                self.update_catalog(ta.text)
+        except Exception:
+            pass
+
+    def close_catalog(self) -> None:
+        """Close/dismiss the command catalog."""
+        try:
+            catalog = self.query_one("#slash-catalog", SlashCommandCatalog)
+            catalog.matches = []
+            catalog.selected_index = 0
+            catalog.catalog_offset = 0
+            catalog.remove_class("-visible")
+        except Exception:
+            pass
+
+    @property
+    def has_history(self) -> bool:
+        return bool(self._history)
+
+    @property
+    def value(self) -> str:
+        try:
+            return self._get_text_area().text
+        except Exception:
+            return ""
+
+    @value.setter
+    def value(self, val: str) -> None:
+        try:
+            ta = self._get_text_area()
+            ta.text = val
+            self.update_catalog(val)
+        except Exception:
+            pass
+
+    def submit_text(self, prompt: str) -> None:
+        """Submit text, append to history, and emit Submitted message."""
+        if not prompt:
+            return
+        if not self._history or self._history[-1] != prompt:
+            self._history.append(prompt)
+        self._history_idx = len(self._history)
+        self.post_message(PromptInput.Submitted(prompt))
+        try:
+            ta = self._get_text_area()
+            ta.text = ""
+            self.close_catalog()
+        except Exception:
+            pass
 
     def submit_current(self) -> None:
         """Programmatically submit the current input text."""
         try:
-            inp = self.query_one("#prompt-input", Input)
-            prompt = inp.value.strip()
+            ta = self._get_text_area()
+            prompt = ta.text.strip()
             if prompt:
-                if not self._history or self._history[-1] != prompt:
-                    self._history.append(prompt)
-                self._history_idx = len(self._history)
-                self.post_message(PromptInput.Submitted(prompt))
-                inp.value = ""
+                self.submit_text(prompt)
         except Exception:
             pass
 
@@ -247,22 +601,27 @@ class PromptInput(Widget):
         if not self._history:
             return
         try:
-            inp = self.query_one("#prompt-input", Input)
+            ta = self._get_text_area()
             new_idx = self._history_idx + delta
             if 0 <= new_idx < len(self._history):
                 self._history_idx = new_idx
-                inp.value = self._history[self._history_idx]
-                inp.cursor_position = len(inp.value)
+                ta.text = self._history[self._history_idx]
+                ta.cursor_location = (0, len(ta.text))
             elif new_idx >= len(self._history):
                 self._history_idx = len(self._history)
-                inp.value = ""
+                ta.text = ""
+            self.update_catalog(ta.text)
         except Exception:
             pass
 
     def focus_input(self) -> None:
         """Focus the input field."""
         try:
-            self.query_one("#prompt-input", Input).focus()
+            self._get_text_area().focus()
+        except Exception:
+            pass
+        except Exception:
+            pass
         except Exception:
             pass
 
@@ -392,22 +751,23 @@ class DiffView(Widget):
         self._render_diff(path, diff_text)
 
     def _render_diff(self, path: str, diff_text: str) -> None:
-        """Render a single diff with colors."""
+        """Render a single diff with high-contrast colors."""
         self.log.write(
-            f"\n[bold]{escape(path)}[/bold]\n"
-            f"[dim]{'─' * 40}[/dim]"
+            f"\n[bold white]DIFF[/bold white]  [bold #8888cc]{escape(path)}[/bold #8888cc]\n"
+            f"[dim]{'─' * 50}[/dim]"
         )
         for line in diff_text.split("\n"):
             if line.startswith("+++") or line.startswith("---"):
-                self.log.write(f"[bold]{escape(line)}[/bold]")
+                self.log.write(f"  [bold white]{escape(line)}[/bold white]")
             elif line.startswith("@@"):
-                self.log.write(f"[cyan]{escape(line)}[/cyan]")
+                self.log.write(f"  [bold cyan]{escape(line)}[/bold cyan]")
             elif line.startswith("+"):
-                self.log.write(f"[green]{escape(line)}[/green]")
+                self.log.write(f"  [bold green]{escape(line)}[/bold green]")
             elif line.startswith("-"):
-                self.log.write(f"[red]{escape(line)}[/red]")
+                self.log.write(f"  [bold red]{escape(line)}[/bold red]")
             else:
-                self.log.write(f"[dim]{escape(line)}[/dim]")
+                self.log.write(f"  [dim]{escape(line)}[/dim]")
+        self.log.write(f"[dim]{'─' * 50}[/dim]")
 
     def clear_diffs(self) -> None:
         """Clear all diffs."""

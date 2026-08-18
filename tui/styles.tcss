@@ -7,6 +7,7 @@
 Screen {
     layout: vertical;
     background: $background;
+    overflow: hidden;
 }
 
 /* ── Status Header ──────────────────────────────────────── */
@@ -17,7 +18,8 @@ Screen {
     background: #1a1a2e;
     color: #e0e0e0;
     content-align: left middle;
-    padding: 0 2;
+    padding: 0 1;
+    dock: top;
 }
 
 /* ── Main Layout ────────────────────────────────────────── */
@@ -30,9 +32,9 @@ Screen {
 /* ── Project Explorer (Left Panel) ──────────────────────── */
 
 #project-explorer {
-    width: 18%;
-    min-width: 20;
-    max-width: 40;
+    width: 14%;
+    min-width: 16;
+    max-width: 24;
     height: 100%;
     border-right: tall #333344;
     background: #0f0f1a;
@@ -88,6 +90,7 @@ Screen {
 
 #agent-workspace #workspace-log {
     height: 1fr;
+    width: 100%;
     padding: 0 1;
     scrollbar-size: 1 1;
     background: #0d0d1a;
@@ -98,22 +101,49 @@ Screen {
 /* ── Prompt Input ───────────────────────────────────────── */
 
 #prompt-input {
-    height: 3;
+    height: auto;
+    min-height: 3;
+    max-height: 14;
     width: 100%;
-    padding: 0 1;
+    padding: 0;
+    margin: 0;
 }
 
-#prompt-input #prompt-input {
+#prompt-input PromptTextArea {
+    height: auto;
+    min-height: 3;
+    max-height: 6;
+    width: 100%;
     border: tall #444466;
     background: #1a1a2e;
+    color: #ffffff;
+}
+
+#prompt-input PromptTextArea:focus {
+    border: tall #6688cc;
+}
+
+SlashCommandCatalog {
+    height: auto;
+    max-height: 8;
+    width: 100%;
+    display: none;
+    background: #141428;
+    border: tall #555588;
+    padding: 0 1;
+    margin-bottom: 0;
+}
+
+SlashCommandCatalog.-visible {
+    display: block;
 }
 
 /* ── Right Panel ────────────────────────────────────────── */
 
 #right-panel {
-    width: 24%;
-    min-width: 22;
-    max-width: 40;
+    width: 17%;
+    min-width: 18;
+    max-width: 26;
     height: 100%;
     border-left: tall #333344;
     background: #0f0f1a;
@@ -243,7 +273,49 @@ ApprovalModal {
     background: #1a1a2e;
     color: #666688;
     content-align: center middle;
+    padding: 0;
+    dock: bottom;
+}
+
+#footer-bar Horizontal {
+    height: 1;
+    width: 100%;
+    align: center middle;
+    overflow-x: hidden;
+}
+
+#footer-bar Button {
+    height: 1;
+    min-width: 0;
     padding: 0 1;
+    margin: 0;
+    border: none;
+    background: #22223b;
+    color: #aaaaee;
+}
+
+#footer-bar Button:hover {
+    background: #3b3b66;
+    color: #ffffff;
+    border: none;
+}
+
+#footer-bar Button.-active {
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+}
+
+#footer-bar Button.-stop-active {
+    background: #dc2626;
+    color: #ffffff;
+    border: none;
+}
+
+#footer-bar Button.-disabled {
+    color: #555577;
+    background: #111122;
+    border: none;
 }
 
 /* ── Scrollbar Styling ──────────────────────────────────── */
