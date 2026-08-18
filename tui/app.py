@@ -37,6 +37,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import Hit, Provider, Hits
 from textual.containers import Horizontal, Vertical
+from textual.events import TextSelected
 from textual.widgets import Footer, Header
 from textual.worker import Worker, get_current_worker
 
@@ -156,6 +157,7 @@ class DraftApp(App):
         Binding("f5", "open_diff", "Diff"),
         Binding("f6", "open_git", "Git"),
         Binding("f7", "open_timeline", "Logs"),
+        Binding("ctrl+shift+c", "copy_text", "Copy"),
         Binding("ctrl+c", "quit_app", "Quit"),
     ]
 
@@ -485,6 +487,20 @@ class DraftApp(App):
             self._runtime.dispatcher.resolve_approval(
                 message.call_id, ApprovalDecision.DENIED
             )
+
+    # ── Text Selection & Copy ──────────────────────────────
+
+    def on_text_selected(self, event: TextSelected) -> None:
+        """Copy text to the clipboard when a drag selection ends."""
+        selection = self.screen.get_selected_text()
+        if selection:
+            self.copy_to_clipboard(selection)
+
+    def action_copy_text(self) -> None:
+        """Copy the current text selection to the clipboard."""
+        selection = self.screen.get_selected_text()
+        if selection:
+            self.copy_to_clipboard(selection)
 
     # ── Actions ───────────────────────────────────────────────
 

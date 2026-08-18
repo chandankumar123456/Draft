@@ -253,7 +253,7 @@ DirectoryTree > .directory-tree--extension {
 
 /* ── RichLog Common ─────────────────────────────────────── */
 
-RichLog {
+SelectableRichLog {
     background: transparent;
 }
 
