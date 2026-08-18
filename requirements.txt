@@ -1,5 +1,6 @@
 python-dotenv
 azure-ai-projects
 azure-identity
+azure-identity-broker
 httpx
 textual
