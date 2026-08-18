@@ -597,8 +597,12 @@ class DraftApp(App):
         )
 
     def _handle_slash_command(self, cmd_line: str) -> None:
-        """Execute interactive slash commands."""
-        parts = cmd_line.split(maxsplit=1)
+        """Execute interactive slash commands with argument parsing."""
+        raw = cmd_line.strip()
+        parts = raw.split(maxsplit=1)
+        if not parts:
+            return
+
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
 
@@ -634,7 +638,6 @@ class DraftApp(App):
 
         elif cmd == "/config":
             if arg:
-                # e.g. /config https://... or /config model=...
                 workspace.write_system_message(
                     "Use /endpoint <url> or /model <name> to change settings.",
                     level="info",
@@ -649,13 +652,20 @@ class DraftApp(App):
             if arg:
                 self._update_endpoint(arg)
             else:
-                self.action_show_config()
+                current_ep = os.getenv("PROJECT_ENDPOINT", "not set")
+                workspace.write_system_message(
+                    f"Usage: /endpoint <project_endpoint> (Current: {current_ep})",
+                    level="info",
+                )
 
         elif cmd == "/model":
             if arg:
                 self._update_model(arg)
             else:
-                self.action_show_config()
+                workspace.write_system_message(
+                    f"Usage: /model <model_deployment> (Current: {self._model})",
+                    level="info",
+                )
 
         elif cmd in ("/exit", "/quit"):
             self.action_quit_app()
@@ -669,31 +679,47 @@ class DraftApp(App):
     def _update_endpoint(self, new_endpoint: str) -> None:
         """Update endpoint at runtime and reinitialize."""
         workspace = self.query_one("#agent-workspace", AgentWorkspace)
-        os.environ["PROJECT_ENDPOINT"] = new_endpoint
+        clean_endpoint = new_endpoint.strip()
+        if not clean_endpoint:
+            workspace.write_system_message(
+                "Error: Project endpoint cannot be empty. Usage: /endpoint <project_endpoint>",
+                level="error",
+            )
+            return
+
+        os.environ["PROJECT_ENDPOINT"] = clean_endpoint
         if self._runtime is not None:
-            self._runtime.reconfigure(endpoint=new_endpoint)
+            self._runtime.reconfigure(endpoint=clean_endpoint)
         else:
             self._init_agent()
         workspace.write_system_message(
-            f"Project Endpoint updated: {new_endpoint}", level="info"
+            f"✓ Project endpoint updated: {clean_endpoint}", level="info"
         )
 
     def _update_model(self, new_model: str) -> None:
         """Update model deployment at runtime and reinitialize."""
         workspace = self.query_one("#agent-workspace", AgentWorkspace)
-        self._model = new_model
+        clean_model = new_model.strip()
+        if not clean_model:
+            workspace.write_system_message(
+                "Error: Model name cannot be empty. Usage: /model <model_deployment>",
+                level="error",
+            )
+            return
+
+        self._model = clean_model
         try:
             header = self.query_one("#status-header", StatusHeader)
-            header.model = new_model
+            header.model = clean_model
         except Exception:
             pass
-        os.environ["MODEL_DEPLOYMENT"] = new_model
+        os.environ["MODEL_DEPLOYMENT"] = clean_model
         if self._runtime is not None:
-            self._runtime.reconfigure(model=new_model)
+            self._runtime.reconfigure(model=clean_model)
         else:
             self._init_agent()
         workspace.write_system_message(
-            f"Model Deployment updated: {new_model}", level="info"
+            f"✓ Model deployment changed to: {clean_model}", level="info"
         )
 
     def action_show_config(self, mandatory: bool = False) -> None:

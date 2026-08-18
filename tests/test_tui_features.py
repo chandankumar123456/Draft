@@ -58,12 +58,42 @@ async def test_prompt_multiline_shift_enter():
         await pilot.press("shift+enter")
         assert "\n" in text_area.text
 
+        # Test Alt+Enter -> inserts newline
+        text_area.text = "Line A"
+        text_area.cursor_location = (0, 6)
+        await pilot.press("alt+enter")
+        assert "\n" in text_area.text
+
+        # Test Backslash (\) line continuation
+        text_area.text = "Line X\\"
+        text_area.cursor_location = (0, 7)
+        await pilot.press("enter")
+        assert "\n" in text_area.text
+        assert "Line X\n" in text_area.text
+
+        # Test Ctrl+O multiline toggle
+        await pilot.press("ctrl+o")
+        assert prompt_input.is_multiline is True
+        text_area.text = "Multiline Line 1"
+        text_area.cursor_location = (0, 16)
+        await pilot.press("enter")
+        assert "\n" in text_area.text
+
+        # In multiline mode, Ctrl+S submits
+        await pilot.press("ctrl+s")
+        assert len(app.submitted_messages) == 1
+        assert "Multiline Line 1" in app.submitted_messages[0]
+
+        # Reset multiline mode
+        await pilot.press("ctrl+o")
+        assert prompt_input.is_multiline is False
+
         text_area.text = "Line 1\nLine 2"
 
-        # Press Enter without Shift -> submits complete multiline text
+        # Press Enter in single line mode -> submits complete multiline text
         await pilot.press("enter")
-        assert len(app.submitted_messages) == 1
-        assert app.submitted_messages[0] == "Line 1\nLine 2"
+        assert len(app.submitted_messages) == 2
+        assert app.submitted_messages[1] == "Line 1\nLine 2"
         # Input cleared after submission
         assert text_area.text == ""
 
@@ -162,7 +192,7 @@ async def test_slash_command_esc_closes_catalog():
 
 @pytest.mark.anyio
 async def test_slash_commands_execution():
-    """Test slash commands in DraftApp (/help, /clear, /status, /config, /new)."""
+    """Test slash commands in DraftApp (/help, /clear, /status, /config, /new, /model, /endpoint)."""
     with patch.object(DraftApp, "_init_agent", return_value=None):
         app = DraftApp(model="gpt-4.1-mini")
         async with app.run_test() as pilot:
@@ -182,14 +212,67 @@ async def test_slash_commands_execution():
             prompt_input.submit_text("/config")
             await pilot.pause()
 
-            # 4. /new command
+            # 4. /model command with argument
+            prompt_input.submit_text("/model gpt-4o")
+            await pilot.pause()
+            assert app._model == "gpt-4o"
+            assert os.environ["MODEL_DEPLOYMENT"] == "gpt-4o"
+
+            # 5. /model command with extra whitespace
+            prompt_input.submit_text("/model    gpt-4.1-mini")
+            await pilot.pause()
+            assert app._model == "gpt-4.1-mini"
+            assert os.environ["MODEL_DEPLOYMENT"] == "gpt-4.1-mini"
+
+            # 6. /model without arguments (usage info)
+            prompt_input.submit_text("/model")
+            await pilot.pause()
+
+            # 7. /endpoint command with argument
+            prompt_input.submit_text("/endpoint https://custom.services.ai.azure.com")
+            await pilot.pause()
+            assert os.environ["PROJECT_ENDPOINT"] == "https://custom.services.ai.azure.com"
+
+            # 8. /endpoint command with extra whitespace
+            prompt_input.submit_text("/endpoint    https://example.com/api")
+            await pilot.pause()
+            assert os.environ["PROJECT_ENDPOINT"] == "https://example.com/api"
+
+            # 9. /endpoint without arguments (usage info)
+            prompt_input.submit_text("/endpoint")
+            await pilot.pause()
+
+            # 10. /new command
             prompt_input.submit_text("/new")
             await pilot.pause()
 
-            # 5. /clear command
+            # 11. /clear command
             prompt_input.submit_text("/clear")
             await pilot.pause()
             assert len(workspace.log.lines) == 0
+
+
+@pytest.mark.anyio
+async def test_slash_command_argument_enter_key_submission():
+    """Verify typing /model gpt-4o and pressing Enter key executes the command end-to-end."""
+    with patch.object(DraftApp, "_init_agent", return_value=None):
+        app = DraftApp(model="gpt-4.1-mini")
+        async with app.run_test() as pilot:
+            prompt_input = app.query_one("#prompt-input", PromptInput)
+            text_area = prompt_input.query_one("#prompt-input", PromptTextArea)
+            text_area.focus()
+
+            # Set text to argument-based command
+            prompt_input.value = "/model gpt-4o"
+            await pilot.pause()
+            assert prompt_input.is_catalog_visible is False
+
+            # Press Enter -> executes /model gpt-4o
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app._model == "gpt-4o"
+            assert text_area.text == ""
 
 
 @pytest.mark.anyio

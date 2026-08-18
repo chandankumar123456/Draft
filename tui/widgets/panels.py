@@ -222,16 +222,17 @@ class SlashCommandCatalog(Widget):
 
     def filter_commands(self, text: str) -> bool:
         """Filter commands dynamically. Returns True if catalog is visible."""
-        stripped = text.strip()
-        if not stripped.startswith("/"):
+        # If text does not start with slash or contains spaces (arguments), close catalog
+        if not text.startswith("/") or " " in text:
             self.matches = []
             self.selected_index = 0
             self.catalog_offset = 0
             self.remove_class("-visible")
             return False
 
-        # Match command token before space
-        token = stripped.split()[0].lower()
+        stripped = text.strip()
+        # Match command token
+        token = stripped.lower()
         if token == "/":
             self.matches = list(SLASH_COMMANDS)
         else:
@@ -334,7 +335,32 @@ class PromptTextArea(TextArea):
         p_input = self._get_prompt_input()
         catalog_active = p_input is not None and p_input.is_catalog_visible
 
-        if event.key in ("shift+enter", "shift+return"):
+        if event.key == "ctrl+o":
+            event.prevent_default()
+            event.stop()
+            if p_input:
+                p_input.toggle_multiline()
+            return
+
+        if event.key in ("ctrl+s",):
+            event.prevent_default()
+            event.stop()
+            prompt = self.text.strip()
+            if prompt and p_input:
+                p_input.submit_text(prompt)
+            return
+
+        if event.key in (
+            "shift+enter",
+            "shift+return",
+            "shift+linefeed",
+            "alt+enter",
+            "alt+return",
+            "meta+enter",
+            "ctrl+enter",
+            "ctrl+return",
+            "ctrl+j",
+        ):
             event.prevent_default()
             event.stop()
             self.insert("\n")
@@ -347,6 +373,18 @@ class PromptTextArea(TextArea):
             event.stop()
             if catalog_active and p_input is not None:
                 p_input.select_catalog_active()
+                return
+
+            if p_input and p_input.is_multiline:
+                self.insert("\n")
+                return
+
+            # If user ended line with backslash (\), treat as line continuation
+            if self.text.endswith("\\"):
+                self.text = self.text[:-1] + "\n"
+                self.cursor_location = (self.document.line_count - 1, 0)
+                if p_input:
+                    p_input.update_catalog(self.text)
                 return
 
             prompt = self.text.strip()
@@ -438,11 +476,12 @@ class PromptInput(Widget):
         super().__init__(**kwargs)
         self._history: list[str] = []
         self._history_idx: int = -1
+        self._multiline: bool = False
 
     def compose(self) -> ComposeResult:
         yield SlashCommandCatalog(id="slash-catalog")
         yield PromptTextArea(
-            placeholder="Message the agent... (Enter to send, Shift+Enter for newline, / for commands)",
+            placeholder="Message the agent... (Enter to send, Alt+Enter / for newline, Ctrl+O for multiline mode)",
             theme="vscode_dark",
             id="prompt-input",
         )
@@ -450,6 +489,18 @@ class PromptInput(Widget):
     def _get_text_area(self) -> PromptTextArea:
         """Helper to get child PromptTextArea widget reliably."""
         return self.query_one(PromptTextArea)
+
+    @property
+    def is_multiline(self) -> bool:
+        return self._multiline
+
+    def toggle_multiline(self) -> None:
+        """Toggle between single-line (Enter to send) and multi-line mode (Enter for newline)."""
+        self._multiline = not self._multiline
+        if self._multiline:
+            self.placeholder = "📝 MULTI-LINE MODE: Enter inserts newline | Ctrl+S or click Send to submit | Ctrl+O to exit"
+        else:
+            self.placeholder = "Message the agent... (Enter to send, Shift+Enter / Alt+Enter / \\ for newline, Ctrl+O for multiline mode)"
 
     @property
     def placeholder(self) -> str:
