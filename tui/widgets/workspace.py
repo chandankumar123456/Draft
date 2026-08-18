@@ -30,6 +30,55 @@ from tui.widgets.common import SelectableRichLog
 
 
 # ════════════════════════════════════════════════════════════════
+# THINKING INDICATOR
+# ════════════════════════════════════════════════════════════════
+
+class ThinkingIndicator(Static):
+    """Animated indicator showing agent thinking/typing state."""
+
+    DEFAULT_CSS = """
+    ThinkingIndicator {
+        height: 1;
+        width: 100%;
+        background: #111122;
+        color: #3b82f6;
+        padding: 0 1;
+        display: none;
+    }
+    """
+
+    SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    DOTS_FRAMES = [".  ", ".. ", "...", "   "]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._frame_idx = 0
+        self._timer = None
+        self._message = "Agent is thinking"
+
+    def start_thinking(self, message: str = "Agent is thinking...") -> None:
+        """Start the animation timer and show widget."""
+        self._message = message.rstrip(". ")
+        self.display = True
+        if self._timer is None:
+            self._timer = self.set_interval(0.15, self._tick)
+        self._tick()
+
+    def stop_thinking(self) -> None:
+        """Stop animation timer and hide widget."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        self.display = False
+
+    def _tick(self) -> None:
+        spinner = self.SPINNER_FRAMES[self._frame_idx % len(self.SPINNER_FRAMES)]
+        dots = self.DOTS_FRAMES[self._frame_idx % len(self.DOTS_FRAMES)]
+        self._frame_idx += 1
+        self.update(f"[bold cyan]{spinner}[/bold cyan] [bold blue]{escape(self._message)}[/bold blue][cyan]{dots}[/cyan]")
+
+
+# ════════════════════════════════════════════════════════════════
 # AGENT WORKSPACE
 # ════════════════════════════════════════════════════════════════
 
@@ -72,24 +121,42 @@ class AgentWorkspace(Widget):
             wrap=True,
             auto_scroll=True,
         )
+        yield ThinkingIndicator(id="thinking-indicator")
 
     @property
     def log(self) -> SelectableRichLog:
         return self.query_one("#workspace-log", SelectableRichLog)
+
+    def start_thinking(self, message: str = "Agent is thinking...") -> None:
+        """Show animated thinking indicator."""
+        try:
+            indicator = self.query_one("#thinking-indicator", ThinkingIndicator)
+            indicator.start_thinking(message)
+        except Exception:
+            pass
+
+    def stop_thinking(self) -> None:
+        """Hide animated thinking indicator."""
+        try:
+            indicator = self.query_one("#thinking-indicator", ThinkingIndicator)
+            indicator.stop_thinking()
+        except Exception:
+            pass
 
     # ── Conversation events ─────────────────────────────────────
 
     def write_user_message(self, content: str) -> None:
         """Display a user message."""
         self.log.write(
-            f"\n[bold green]USER[/bold green]\n"
+            f"\n[bold green]👤 USER[/bold green]\n"
             f"  [green]> {escape(content)}[/green]"
         )
 
     def write_agent_message(self, content: str) -> None:
         """Display an agent response."""
+        self.stop_thinking()
         self.log.write(
-            f"\n[bold cyan]AGENT[/bold cyan]\n"
+            f"\n[bold cyan]🤖 AGENT[/bold cyan]\n"
             f"{escape(content)}"
         )
 

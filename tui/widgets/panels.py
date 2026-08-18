@@ -184,12 +184,21 @@ class PromptInput(Widget):
     """Bottom prompt bar for user input.
 
     Emits ``PromptSubmitted`` when the user presses Enter.
+    Supports prompt history navigation with Up/Down arrows.
     """
 
     DEFAULT_CSS = """
     PromptInput {
         height: 3;
         width: 100%;
+    }
+    PromptInput #prompt-input {
+        border: tall #444466;
+        background: #1a1a2e;
+        color: #e0e0e0;
+    }
+    PromptInput #prompt-input:focus {
+        border: tall #6688cc;
     }
     """
 
@@ -199,17 +208,56 @@ class PromptInput(Widget):
             super().__init__()
             self.value = value
 
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._history: list[str] = []
+        self._history_idx: int = -1
+
     def compose(self) -> ComposeResult:
         yield Input(
-            placeholder="Type your prompt... (Enter to submit)",
+            placeholder="Message the agent... (Press Enter to send, Esc Esc to stop)",
             id="prompt-input",
         )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         prompt = event.value.strip()
         if prompt:
+            if not self._history or self._history[-1] != prompt:
+                self._history.append(prompt)
+            self._history_idx = len(self._history)
             self.post_message(PromptInput.Submitted(prompt))
             event.input.value = ""
+
+    def submit_current(self) -> None:
+        """Programmatically submit the current input text."""
+        try:
+            inp = self.query_one("#prompt-input", Input)
+            prompt = inp.value.strip()
+            if prompt:
+                if not self._history or self._history[-1] != prompt:
+                    self._history.append(prompt)
+                self._history_idx = len(self._history)
+                self.post_message(PromptInput.Submitted(prompt))
+                inp.value = ""
+        except Exception:
+            pass
+
+    def navigate_history(self, delta: int) -> None:
+        """Navigate prompt history up (-1) or down (+1)."""
+        if not self._history:
+            return
+        try:
+            inp = self.query_one("#prompt-input", Input)
+            new_idx = self._history_idx + delta
+            if 0 <= new_idx < len(self._history):
+                self._history_idx = new_idx
+                inp.value = self._history[self._history_idx]
+                inp.cursor_position = len(inp.value)
+            elif new_idx >= len(self._history):
+                self._history_idx = len(self._history)
+                inp.value = ""
+        except Exception:
+            pass
 
     def focus_input(self) -> None:
         """Focus the input field."""
@@ -596,22 +644,124 @@ class ApprovalModal(Widget):
             self.action_deny()
 
 
+from textual.reactive import reactive
+
 # ════════════════════════════════════════════════════════════════
 # FOOTER BAR
 # ════════════════════════════════════════════════════════════════
 
-class FooterBar(Static):
-    """Custom footer showing keyboard shortcuts."""
+class FooterBar(Widget):
+    """Interactive control bar showing clickable buttons corresponding to keyboard shortcuts."""
 
-    def render(self) -> str:
-        keys = [
-            "[bold]F1[/bold] Help",
-            "[bold]F2[/bold] Files",
-            "[bold]F3[/bold] Agent",
-            "[bold]F4[/bold] Tools",
-            "[bold]F5[/bold] Diff",
-            "[bold]F6[/bold] Git",
-            "[bold]F7[/bold] Logs",
-            "[bold]Ctrl+K[/bold] Cmd",
-        ]
-        return "  ".join(keys)
+    DEFAULT_CSS = """
+    FooterBar {
+        height: 1;
+        width: 100%;
+        background: #1a1a2e;
+        color: #8888aa;
+    }
+    FooterBar Horizontal {
+        height: 1;
+        width: 100%;
+        align: center middle;
+    }
+    FooterBar Button {
+        height: 1;
+        min-width: 6;
+        padding: 0 1;
+        margin: 0 1;
+        border: none;
+        background: #22223b;
+        color: #aaaaee;
+    }
+    FooterBar Button:hover {
+        background: #3b3b66;
+        color: #ffffff;
+        border: none;
+    }
+    FooterBar Button.-active {
+        background: #2563eb;
+        color: #ffffff;
+    }
+    FooterBar Button.-stop-active {
+        background: #dc2626;
+        color: #ffffff;
+    }
+    FooterBar Button.-disabled {
+        color: #555577;
+        background: #111122;
+    }
+    """
+
+    agent_status = reactive("IDLE")
+
+    class ActionRequested(Message):
+        """A control button was clicked."""
+        def __init__(self, action_name: str) -> None:
+            super().__init__()
+            self.action_name = action_name
+
+    def compose(self) -> ComposeResult:
+        yield Horizontal(
+            Button("[ Enter ] Send", id="btn-send", classes="control-chip -active"),
+            Button("[ Esc Esc ] Stop", id="btn-stop", classes="control-chip -disabled"),
+            Button("[ ↑↓ ] History", id="btn-history", classes="control-chip"),
+            Button("[ F2 ] Files", id="btn-files", classes="control-chip"),
+            Button("[ F4 ] Tools", id="btn-tools", classes="control-chip"),
+            Button("[ F5 ] Diff", id="btn-diff", classes="control-chip"),
+            Button("[ F6 ] Git", id="btn-git", classes="control-chip"),
+            Button("[ F7 ] Logs", id="btn-logs", classes="control-chip"),
+            Button("[ Ctrl+K ] Cmd", id="btn-cmd", classes="control-chip"),
+            Button("[ Ctrl+C ] Exit", id="btn-exit", classes="control-chip"),
+        )
+
+    def watch_agent_status(self, old_val: str, new_val: str) -> None:
+        """Update button enabled/active states based on agent status."""
+        try:
+            btn_send = self.query_one("#btn-send", Button)
+            btn_stop = self.query_one("#btn-stop", Button)
+            if new_val in ("RUNNING", "THINKING", "WAITING"):
+                btn_send.disabled = True
+                btn_send.add_class("-disabled")
+                btn_send.remove_class("-active")
+
+                btn_stop.disabled = False
+                btn_stop.remove_class("-disabled")
+                btn_stop.add_class("-stop-active")
+            else:
+                btn_send.disabled = False
+                btn_send.remove_class("-disabled")
+                btn_send.add_class("-active")
+
+                btn_stop.disabled = True
+                btn_stop.add_class("-disabled")
+                btn_stop.remove_class("-stop-active")
+        except Exception:
+            pass
+
+    def flash_button(self, button_id: str) -> None:
+        """Provide brief visual feedback when a shortcut key is pressed."""
+        try:
+            btn = self.query_one(f"#{button_id}", Button)
+            btn.add_class("-active")
+            self.set_timer(0.2, lambda: btn.remove_class("-active"))
+        except Exception:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        action_map = {
+            "btn-send": "send",
+            "btn-stop": "stop",
+            "btn-history": "history",
+            "btn-files": "files",
+            "btn-tools": "tools",
+            "btn-diff": "diff",
+            "btn-git": "git",
+            "btn-logs": "logs",
+            "btn-cmd": "cmd",
+            "btn-exit": "exit",
+        }
+        action_name = action_map.get(button_id)
+        if action_name:
+            self.post_message(FooterBar.ActionRequested(action_name))

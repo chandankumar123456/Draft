@@ -9,9 +9,10 @@ from rich.console import Console
 from rich.markup import escape, render as render_markup
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 # Add agent dir to path
 _agent_dir = os.path.join(
@@ -46,21 +47,80 @@ _FALLBACK_WIDTH = 36
 # STATUS HEADER
 # ════════════════════════════════════════════════════════════════
 
-class StatusHeader(Static):
-    """Top status bar showing agent status, project, branch, model."""
+class StatusHeader(Widget):
+    """Top status bar showing hamburger button, agent status, project, branch, model."""
+
+    DEFAULT_CSS = """
+    StatusHeader {
+        height: 1;
+        width: 100%;
+        background: #1a1a2e;
+        color: #e0e0e0;
+    }
+    StatusHeader Horizontal {
+        height: 1;
+        width: 100%;
+    }
+    StatusHeader #header-hamburger {
+        width: 13;
+        min-width: 13;
+        height: 1;
+        padding: 0;
+        margin: 0 1 0 0;
+        content-align: center middle;
+        border: none;
+        background: #16213e;
+        color: #8888cc;
+    }
+    StatusHeader #header-hamburger:hover,
+    StatusHeader #header-hamburger:focus {
+        color: #ffffff;
+        background: #2a3b66;
+        border: none;
+    }
+    StatusHeader #header-info {
+        width: 1fr;
+        height: 1;
+        content-align: left middle;
+    }
+    """
 
     status = reactive("IDLE")
     project_name = reactive("Draft")
     branch = reactive("")
     model = reactive("")
 
-    def render(self) -> str:
+    def compose(self) -> ComposeResult:
+        yield Horizontal(
+            Button("☰ Project", id="header-hamburger"),
+            Static(id="header-info"),
+        )
+
+    def on_mount(self) -> None:
+        self._update_info()
+
+    def watch_status(self) -> None:
+        self._update_info()
+
+    def watch_project_name(self) -> None:
+        self._update_info()
+
+    def watch_branch(self) -> None:
+        self._update_info()
+
+    def watch_model(self) -> None:
+        self._update_info()
+
+    def _update_info(self) -> None:
         status_icon = {
-            "IDLE": "[dim]○[/dim]",
-            "RUNNING": "[bold green]●[/bold green]",
-            "COMPLETED": "[bold cyan]●[/bold cyan]",
-            "FAILED": "[bold red]●[/bold red]",
-            "CANCELLED": "[bold yellow]●[/bold yellow]",
+            "IDLE": "[green]🟢[/green]",
+            "READY": "[green]🟢[/green]",
+            "RUNNING": "[cyan]🔵[/cyan]",
+            "THINKING": "[cyan]🔵[/cyan]",
+            "WAITING": "[yellow]🟡[/yellow]",
+            "COMPLETED": "[cyan]🟢[/cyan]",
+            "FAILED": "[red]🔴[/red]",
+            "CANCELLED": "[orange]🟠[/orange]",
         }.get(self.status, "[dim]○[/dim]")
 
         parts = [
@@ -73,7 +133,16 @@ class StatusHeader(Static):
         if self.model:
             parts.append(f"model: [yellow]{self.model}[/yellow]")
 
-        return "  │  ".join(parts)
+        try:
+            info = self.query_one("#header-info", Static)
+            info.update("  │  ".join(parts))
+        except Exception:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "header-hamburger":
+            from tui.widgets.panels import ProjectExplorer
+            self.post_message(ProjectExplorer.ToggleRequested())
 
 
 # ════════════════════════════════════════════════════════════════
@@ -82,19 +151,23 @@ class StatusHeader(Static):
 
 # Status → (icon, markup open tag) for the STATUS row value.
 _STATUS_ICONS = {
-    "IDLE": ("○", "[dim]"),
-    "RUNNING": ("●", "[bold green]"),
-    "COMPLETED": ("●", "[bold cyan]"),
-    "FAILED": ("●", "[bold red]"),
-    "CANCELLED": ("●", "[bold yellow]"),
+    "IDLE": ("🟢", "[bold green]"),
+    "READY": ("🟢", "[bold green]"),
+    "RUNNING": ("🔵", "[bold cyan]"),
+    "THINKING": ("🔵", "[bold cyan]"),
+    "WAITING": ("🟡", "[bold yellow]"),
+    "TOOL EXECUTION": ("🟡", "[bold yellow]"),
+    "COMPLETED": ("🟢", "[bold green]"),
+    "FAILED": ("🔴", "[bold red]"),
+    "CANCELLED": ("🟠", "[bold orange]"),
 }
 
 # Tool status → colored chip for the TOOL row.
 _TOOL_CHIPS = {
-    "RUNNING": "[bold yellow]●[/bold yellow]",
-    "COMPLETED": "[bold green]●[/bold green]",
-    "FAILED": "[bold red]●[/bold red]",
-    "CANCELLED": "[bold #ffbf00]●[/bold #ffbf00]",
+    "RUNNING": "[bold yellow]🟡[/bold yellow]",
+    "COMPLETED": "[bold green]🟢[/bold green]",
+    "FAILED": "[bold red]🔴[/bold red]",
+    "CANCELLED": "[bold #ffbf00]🟠[/bold #ffbf00]",
 }
 
 
