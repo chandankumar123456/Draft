@@ -1,0 +1,284 @@
+/* ═══════════════════════════════════════════════════════════
+   Draft Developer Cockpit — Textual CSS
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Screen ─────────────────────────────────────────────── */
+
+Screen {
+    layout: vertical;
+    background: $background;
+}
+
+/* ── Status Header ──────────────────────────────────────── */
+
+#status-header {
+    height: 1;
+    width: 100%;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    content-align: left middle;
+    padding: 0 2;
+}
+
+/* ── Main Layout ────────────────────────────────────────── */
+
+#main-area {
+    height: 1fr;
+    width: 100%;
+}
+
+/* ── Project Explorer (Left Panel) ──────────────────────── */
+
+#project-explorer {
+    width: 22%;
+    min-width: 20;
+    max-width: 40;
+    height: 100%;
+    border-right: tall #333344;
+    background: #0f0f1a;
+}
+
+#project-explorer #project-tree {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+/* ── Center Panel ───────────────────────────────────────── */
+
+#center-panel {
+    width: 1fr;
+    height: 100%;
+}
+
+/* ── Agent Workspace ────────────────────────────────────── */
+
+#agent-workspace {
+    height: 1fr;
+    width: 100%;
+}
+
+#agent-workspace #workspace-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+    background: #0d0d1a;
+    border: round #333344;
+    margin: 0 0 0 0;
+}
+
+/* ── Prompt Input ───────────────────────────────────────── */
+
+#prompt-input {
+    height: 3;
+    width: 100%;
+    padding: 0 1;
+}
+
+#prompt-input #prompt-input {
+    border: tall #444466;
+    background: #1a1a2e;
+}
+
+/* ── Right Panel ────────────────────────────────────────── */
+
+#right-panel {
+    width: 24%;
+    min-width: 22;
+    max-width: 40;
+    height: 100%;
+    border-left: tall #333344;
+    background: #0f0f1a;
+}
+
+/* ── Agent State Panel ──────────────────────────────────── */
+
+#agent-state {
+    height: 1fr;
+    width: 100%;
+}
+
+#agent-state #state-content {
+    height: 1fr;
+    padding: 0 1;
+    overflow-y: auto;
+}
+
+/* ── Tool Inspector (in right panel) ────────────────────── */
+
+#tool-inspector {
+    height: 40%;
+    width: 100%;
+    border-top: tall #333344;
+}
+
+#tool-inspector #tool-inspector-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+/* ── Panel Titles ───────────────────────────────────────── */
+
+.panel-title {
+    height: 1;
+    width: 100%;
+    background: #16213e;
+    color: #8888cc;
+    content-align: center middle;
+    text-style: bold;
+    padding: 0 1;
+}
+
+/* ── Hidden Panels (toggled via F-keys) ─────────────────── */
+
+#timeline-view {
+    height: 1fr;
+    width: 100%;
+}
+
+#timeline-view #timeline-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+#diff-view {
+    height: 1fr;
+    width: 100%;
+}
+
+#diff-view #diff-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+#test-panel {
+    height: 1fr;
+    width: 100%;
+}
+
+#test-panel #test-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+#git-panel {
+    height: 1fr;
+    width: 100%;
+}
+
+#git-panel #git-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+/* ── Approval Modal ─────────────────────────────────────── */
+
+ApprovalModal {
+    align: center middle;
+    width: 60;
+    height: auto;
+    max-height: 30;
+    border: thick #e6a817;
+    background: #1a1a2e;
+    padding: 1 2;
+    layer: modal;
+}
+
+.modal-title {
+    height: 1;
+    width: 100%;
+    content-align: center middle;
+    text-style: bold;
+    color: #e6a817;
+}
+
+.modal-buttons {
+    height: 3;
+    width: 100%;
+    align: center middle;
+}
+
+.modal-buttons Button {
+    margin: 0 2;
+}
+
+/* ── Footer ─────────────────────────────────────────────── */
+
+#footer-bar {
+    height: 1;
+    width: 100%;
+    background: #1a1a2e;
+    color: #666688;
+    content-align: center middle;
+    padding: 0 1;
+}
+
+/* ── Scrollbar Styling ──────────────────────────────────── */
+
+Scrollbar {
+    background: #0d0d1a;
+}
+
+ScrollBar > .scrollbar--bar {
+    color: #333355;
+}
+
+ScrollBar > .scrollbar--bar-hover {
+    color: #444477;
+}
+
+/* ── DirectoryTree Styling ──────────────────────────────── */
+
+DirectoryTree {
+    background: transparent;
+    scrollbar-size: 1 1;
+}
+
+DirectoryTree > .directory-tree--folder {
+    color: #6688cc;
+}
+
+DirectoryTree > .directory-tree--file {
+    color: #aaaacc;
+}
+
+DirectoryTree > .directory-tree--extension {
+    color: #666688;
+}
+
+/* ── RichLog Common ─────────────────────────────────────── */
+
+RichLog {
+    background: transparent;
+}
+
+/* ── Input Styling ──────────────────────────────────────── */
+
+Input {
+    border: tall #444466;
+    background: #1a1a2e;
+    color: #e0e0e0;
+}
+
+Input:focus {
+    border: tall #6688cc;
+}
+
+/* ── Button Styling ─────────────────────────────────────── */
+
+Button {
+    min-width: 16;
+}
+
+Button.-success {
+    background: #22884a;
+}
+
+Button.-error {
+    background: #aa3333;
+}
