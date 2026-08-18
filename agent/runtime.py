@@ -342,7 +342,8 @@ class AgentRuntime:
 
             response = openai_client.responses.create(
                 input=self._input_list,
-                previous_response_id=response.id,
+                # previous_response_id=response.id,
+                conversation=self._conversation.id,
                 extra_body={
                     "agent_reference": {
                         "name": self._agent.name,

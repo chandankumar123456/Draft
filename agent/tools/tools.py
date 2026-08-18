@@ -1,28 +1,67 @@
 from azure.ai.projects.models import FunctionTool
 
 
+# def make_tool(
+#     name: str,
+#     description: str,
+#     properties: dict,
+#     required: list[str],
+# ) -> FunctionTool:
+#     """
+#     Create an Azure FunctionTool definition.
+#     """
+
+#     return FunctionTool(
+#         name=name,
+#         description=description,
+#         parameters={
+#             "type": "object",
+#             "properties": properties,
+#             "required": required,
+#             "additionalProperties": False,
+#         },
+#         strict=True,
+#     )
+
 def make_tool(
     name: str,
     description: str,
     properties: dict,
     required: list[str],
 ) -> FunctionTool:
-    """
-    Create an Azure FunctionTool definition.
-    """
+
+    strict_properties = {}
+
+    for key, schema in properties.items():
+        schema = schema.copy()
+
+        # Every property MUST be required for strict mode.
+        # Originally optional properties become nullable.
+        if key not in required:
+            schema_type = schema["type"]
+
+            if isinstance(schema_type, str):
+                schema["type"] = [schema_type, "null"]
+            elif "null" not in schema_type:
+                schema["type"] = [*schema_type, "null"]
+
+        strict_properties[key] = schema
 
     return FunctionTool(
         name=name,
         description=description,
         parameters={
             "type": "object",
-            "properties": properties,
-            "required": required,
+            "properties": strict_properties,
+
+            # STRICT MODE:
+            # every property must be listed here.
+            "required": list(properties.keys()),
+
             "additionalProperties": False,
         },
         strict=True,
     )
-
 
 # ============================================================
 # FILESYSTEM
@@ -38,7 +77,7 @@ list_files_tool = make_tool(
             "description": "Directory path to inspect. Optional; defaults to the current directory.",
         }
     },
-    [],
+    ["directory"],
 )
 
 
@@ -56,7 +95,7 @@ list_directory_tree_tool = make_tool(
             "description": "Maximum recursion depth. Optional; defaults to 3.",
         },
     },
-    [],
+    ["path", "depth"],
 )
 
 
@@ -80,7 +119,7 @@ read_file_tool = make_tool(
             "description": "1-based ending line (inclusive). Use null to read until the end.",
         },
     },
-    ["path"],
+    ["path", "start_line", "end_line"],
 )
 
 

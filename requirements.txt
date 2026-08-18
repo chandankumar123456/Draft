@@ -1,6 +1,7 @@
-python-dotenv
 azure-ai-projects
 azure-identity
 azure-identity-broker
 httpx
+openai
+python-dotenv
 textual
