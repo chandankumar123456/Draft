@@ -154,26 +154,23 @@ class AgentWorkspace(Widget):
             self.log.write(f"[bold white]{escape(line)}[/bold white]")
 
     def write_agent_chunk(self, delta: str, accumulated: str = "") -> None:
-        """Progressively stream agent response text into the log."""
-        self.stop_thinking()
-        if not self._streaming_active:
-            self._streaming_active = True
-            self._streaming_text = ""
-            self.log.write("\n[bold cyan]🤖 AGENT[/bold cyan]")
-
-        self._streaming_text += delta
-        self.log.write(escape(delta))
+        """Progressively update thinking state while agent generates response."""
+        self._streaming_active = True
+        self._streaming_text = accumulated or (self._streaming_text + delta)
+        chars = len(self._streaming_text)
+        self.start_thinking(f"Agent generating response... ({chars} chars)")
 
     def write_agent_message(self, content: str) -> None:
-        """Display an agent response or finalize active stream."""
+        """Display an agent response using the full workspace width."""
         self.stop_thinking()
-        if self._streaming_active:
-            self._streaming_active = False
-            self._streaming_text = ""
-        else:
-            self.log.write(f"\n[bold cyan]🤖 AGENT[/bold cyan]")
-            for line in content.splitlines():
+        self._streaming_active = False
+        self._streaming_text = ""
+        self.log.write("\n[bold cyan]🤖 AGENT[/bold cyan]")
+        for line in content.splitlines():
+            if line.strip():
                 self.log.write(f"[white]{escape(line)}[/white]")
+            else:
+                self.log.write("")
 
     def write_slash_help(self) -> None:
         """Display help table for available slash commands."""

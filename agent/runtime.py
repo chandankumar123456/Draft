@@ -249,19 +249,10 @@ class AgentRuntime:
             ))
 
     def _emit_response_text(self, text: str) -> None:
-        """Emit progressive chunks and the final AgentMessage."""
+        """Emit the final complete AgentMessage."""
         if not text:
             return
-        chunk_size = max(1, min(len(text), 24))
-        accumulated = ""
-        for i in range(0, len(text), chunk_size):
-            if self._cancel_event.is_set():
-                return
-            delta = text[i : i + chunk_size]
-            accumulated += delta
-            self.event_bus.emit_threadsafe(
-                AgentMessageChunk(delta=delta, accumulated=accumulated)
-            )
+        self.event_bus.emit_threadsafe(AgentMessageChunk(delta=text, accumulated=text))
         self.event_bus.emit_threadsafe(AgentMessage(content=text))
 
     def _execute_loop(self, prompt: str) -> None:

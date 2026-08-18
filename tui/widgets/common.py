@@ -136,7 +136,7 @@ class SelectableRichLog(RichLog):
         self,
         content,
         width: int | None = None,
-        expand: bool = False,
+        expand: bool = True,
         shrink: bool = True,
         scroll_end: bool | None = None,
         animate: bool = False,

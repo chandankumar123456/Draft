@@ -261,3 +261,163 @@ async def test_visual_diff_rendering():
         workspace.write_patch_applied(event)
         await pilot.pause()
         assert workspace.log.lines
+
+
+@pytest.mark.anyio
+async def test_tools_inspector_screen():
+    """Test ToolInspectorScreen catalog, search filtering, and bottom buttons."""
+    from tui.screens import ToolInspectorScreen
+    from textual.widgets import OptionList, Input
+
+    screen = ToolInspectorScreen()
+
+    class ToolsTestApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = ToolsTestApp()
+    async with app.run_test() as pilot:
+        op_list = screen.query_one("#tools-option-list", OptionList)
+        search_input = screen.query_one("#tools-search-input", Input)
+        detail_log = screen.query_one("#tool-detail-log")
+
+        # 1. Verify all tools are loaded
+        assert op_list.option_count > 30
+
+        # 2. Search / filter tools
+        search_input.value = "git"
+        await pilot.pause()
+        assert op_list.option_count < 30
+        assert op_list.option_count > 0
+
+        # 3. Clear search via button
+        await pilot.click("#btn-tools-clear")
+        assert search_input.value == ""
+        assert op_list.option_count > 30
+
+        # 4. Focus search via button
+        await pilot.click("#btn-tools-search")
+        assert search_input.has_focus
+
+        # 5. Focus detail via button
+        await pilot.click("#btn-tools-detail")
+        assert detail_log.has_focus
+
+        # 6. Back button dismisses screen
+        await pilot.click("#btn-tools-back")
+        await pilot.pause()
+
+
+@pytest.mark.anyio
+async def test_workspace_full_width_rendering():
+    """Verify long agent responses wrap and occupy full workspace width."""
+    workspace = AgentWorkspace()
+
+    class FullWidthApp(App):
+        def compose(self) -> ComposeResult:
+            yield workspace
+
+    app = FullWidthApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        long_msg = "This is a comprehensive agent response that should span across the entire available horizontal space of the workspace log rather than being artificially restricted."
+        workspace.write_agent_message(long_msg)
+        await pilot.pause()
+
+        assert len(workspace.log.lines) > 0
+        # Check that rendered lines contain content and lines are long (wider than 30 chars)
+        max_line_len = max(line.cell_length for line in workspace.log.lines)
+        assert max_line_len > 30
+
+
+@pytest.mark.anyio
+async def test_diff_screen_interactive_buttons():
+    """Test DiffScreen mounting, clear diffs, and bottom buttons."""
+    from tui.screens import DiffScreen
+    from tui.widgets import DiffView
+
+    screen = DiffScreen()
+
+    class DiffTestApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = DiffTestApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        diff_view = screen.query_one("#diff-screen-view", DiffView)
+        diff_view.add_diff("app.py", "+new line\n-old line")
+        await pilot.pause()
+        assert len(diff_view.log.lines) > 0
+
+        # Click Clear Diffs button
+        await pilot.click("#btn-diff-clear")
+        assert len(diff_view.log.lines) == 0
+
+        # Click Focus button
+        await pilot.click("#btn-diff-focus")
+        assert diff_view.log.has_focus
+
+        # Click Back button
+        await pilot.click("#btn-diff-back")
+        await pilot.pause()
+
+
+@pytest.mark.anyio
+async def test_git_screen_interactive_buttons():
+    """Test GitScreen mounting, refresh, and bottom buttons."""
+    from tui.screens import GitScreen
+    from tui.widgets import GitPanel
+
+    screen = GitScreen()
+
+    class GitTestApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = GitTestApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        git_panel = screen.query_one("#git-screen-view", GitPanel)
+
+        # Click Refresh button
+        await pilot.click("#btn-git-refresh")
+        assert len(git_panel.log.lines) > 0
+
+        # Click Focus button
+        await pilot.click("#btn-git-focus")
+        assert git_panel.log.has_focus
+
+        # Click Back button
+        await pilot.click("#btn-git-back")
+        await pilot.pause()
+
+
+@pytest.mark.anyio
+async def test_timeline_screen_interactive_buttons():
+    """Test TimelineScreen mounting, clear logs, and bottom buttons."""
+    from tui.screens import TimelineScreen
+    from tui.widgets import TimelineView
+    from events import SystemMessage
+
+    screen = TimelineScreen()
+
+    class TimelineTestApp(App):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    app = TimelineTestApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        timeline_view = screen.query_one("#timeline-screen-view", TimelineView)
+        timeline_view.add_event(SystemMessage(content="Test event message", level="info"))
+        await pilot.pause()
+        assert len(timeline_view.log.lines) > 0
+
+        # Click Clear button
+        await pilot.click("#btn-timeline-clear")
+        assert len(timeline_view.log.lines) == 0
+
+        # Click Focus button
+        await pilot.click("#btn-timeline-focus")
+        assert timeline_view.log.has_focus
+
+        # Click Back button
+        await pilot.click("#btn-timeline-back")
+        await pilot.pause()
