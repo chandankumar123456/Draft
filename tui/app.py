@@ -487,6 +487,25 @@ class DraftApp(App):
             self._runtime.dispatcher.resolve_approval(
                 message.call_id, ApprovalDecision.DENIED
             )
+        self._mark_tool_cancelled(message.call_id)
+
+    def _mark_tool_cancelled(self, call_id: str) -> None:
+        """Mark the denied tool as CANCELLED in the UI widgets."""
+        try:
+            workspace = self.query_one("#agent-workspace", AgentWorkspace)
+            workspace.mark_tool_cancelled(call_id)
+        except Exception:
+            pass
+        try:
+            inspector = self.query_one("#tool-inspector", ToolInspector)
+            inspector.mark_cancelled(call_id)
+        except Exception:
+            pass
+        try:
+            state_panel = self.query_one("#agent-state", AgentStatePanel)
+            state_panel.mark_tool_cancelled()
+        except Exception:
+            pass
 
     # ── Text Selection & Copy ──────────────────────────────
 
@@ -503,6 +522,12 @@ class DraftApp(App):
             self.copy_to_clipboard(selection)
 
     # ── Actions ───────────────────────────────────────────────
+
+    def on_project_explorer_toggle_requested(
+        self, message: ProjectExplorer.ToggleRequested
+    ) -> None:
+        """Toggle the project explorer when the hamburger is pressed."""
+        self.action_toggle_project()
 
     def action_toggle_project(self) -> None:
         """Toggle the project explorer panel."""
