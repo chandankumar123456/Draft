@@ -1,160 +1,114 @@
-from credential import openai_client, project_client
-from azure.ai.projects.models import PromptAgentDefinition, WebSearchTool
-from instructions import instructions
-from openai.types.responses.response_input_param import ResponseInputParam, FunctionCallOutput
+"""CLI entry point for the Draft agent.
 
-from dotenv import load_dotenv
-import os
-import json
-load_dotenv()
+This preserves the ability to run Draft from a plain terminal without
+the TUI.  It uses the same ``AgentRuntime`` and ``EventBus`` that the
+TUI uses, but subscribes a simple print-based handler.
 
-from tools.tools import ALL_TOOLS
-from tools.registry import TOOL_REGISTRY
+Usage::
 
-agent = project_client.agents.create_version(
-    agent_name="Draft-Main-Agent",
-    definition=PromptAgentDefinition(
-        model = os.getenv("MODEL_DEPLOYMENT"),
-        instructions=instructions,
-        tools=[
-            WebSearchTool(), 
-            *ALL_TOOLS
-        ]
-    )
+    cd agent
+    python agent.py
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+
+from event_bus import EventBus
+from events import (
+    AgentCompleted,
+    AgentFailed,
+    AgentMessage,
+    RuntimeEvent,
+    SystemMessage,
+    ToolCompleted,
+    ToolFailed,
+    ToolStarted,
+    UserMessage,
 )
+from runtime import AgentRuntime
 
-# create a conversation thread
-conversation = openai_client.conversations.create()
-input_list:ResponseInputParam = []
 
-# ----- delete below later
-# print("\n=== ResponseInputParam ===")
-# print("Type:", type(input_list))
-# print("Value:", input_list)
-# print("Is list:", isinstance(input_list, list))
-# print()
-# ----- delete above later
+def _print_event(event: RuntimeEvent) -> None:
+    """Print a runtime event to the terminal."""
+    if isinstance(event, UserMessage):
+        print(f"\n[USER] {event.content}")
+    elif isinstance(event, AgentMessage):
+        print(f"\n[AGENT] {event.content}")
+    elif isinstance(event, ToolStarted):
+        args_str = ", ".join(
+            f"{k}={v!r}" for k, v in event.arguments.items()
+        )
+        print(f"  → {event.tool_name}({args_str})")
+    elif isinstance(event, ToolCompleted):
+        success = event.result.get("success", "?")
+        print(f"  ✓ {event.tool_name} ({event.duration_seconds:.3f}s) "
+              f"success={success}")
+    elif isinstance(event, ToolFailed):
+        print(f"  ✗ {event.tool_name}: {event.error}")
+    elif isinstance(event, AgentCompleted):
+        print(f"\n[DONE] Task completed ({event.iterations} iterations, "
+              f"{event.tool_calls} tool calls)")
+    elif isinstance(event, AgentFailed):
+        print(f"\n[FAILED] {event.error}")
+    elif isinstance(event, SystemMessage):
+        print(f"[SYSTEM] {event.content}")
 
-while True:
-    user_input = input("Enter a prompt for the Draft-Main-Agent. use 'quit' to exit.\nUser: ").strip()
-    if user_input.strip() == "quit":
-        break
 
-    # send prompt to the model
-    openai_client.conversations.items.create(
-        conversation_id=conversation.id,
-        items = [
-            {
-                "type": "message",
-                "role": "user",
-                "content": user_input
-            }
-        ]
-    )
+def main() -> None:
+    """Run the Draft agent in CLI mode."""
+    # Create event bus and runtime
+    event_bus = EventBus()
+    runtime = AgentRuntime(event_bus=event_bus)
 
-    response = openai_client.responses.create(
-        conversation=conversation.id,
-        extra_body= {
-            "agent_reference": {
-                "name": agent.name,
-                "type": "agent_reference"
-            }
-        }, 
-        input = input_list
-    )
+    # Subscribe the print handler
+    # (Using emit_threadsafe, events go to queues; we'll use a queue)
+    queue = event_bus.create_queue()
 
-    if response.status == "failed":
-                    print(f"Response Failed: {response.error}")
-                    
-                    
-    for item in response.output:
+    # Initialize the agent
+    print("Initializing Draft agent...")
+    try:
+        runtime.initialize()
+    except Exception as exc:
+        print(f"Failed to initialize: {exc}")
+        sys.exit(1)
 
-        if item.type != "function_call":
-            continue
-
-        function = TOOL_REGISTRY.get(item.name)
-
-        if function is None:
-            result = {
-                "success": False,
-                "data": None,
-                "message": None,
-                "error": f"Unknown tool: {item.name}",
-            }
-
-        else:
-            try:
-                arguments = json.loads(item.arguments)
-
-                result = function(**arguments)
-
-            except json.JSONDecodeError as exc:
-                result = {
-                    "success": False,
-                    "data": None,
-                    "message": None,
-                    "error": f"Invalid JSON arguments for tool '{item.name}': {str(exc)}",
-                }
-
-            except Exception as exc:
-                result = {
-                    "success": False,
-                    "data": None,
-                    "message": None,
-                    "error": f"Tool '{item.name}' failed: {str(exc)}",
-                }
-
+    # Drain any initialization events
+    while not queue.empty():
         try:
-            serialized = json.dumps(result)
-        except (TypeError, ValueError):
-            result = {
-                "success": False,
-                "data": None,
-                "message": None,
-                "error": f"Tool '{item.name}' produced a non-serializable result",
-            }
-            serialized = json.dumps(result)
+            event = queue.get_nowait()
+            _print_event(event)
+        except Exception:
+            break
 
-        input_list.append(
-            FunctionCallOutput(
-                type="function_call_output",
-                call_id=item.call_id,
-                output=serialized,
-            )
-        )
-            
-            
-            # ---- delete below later
-            # print("\n=== FUNCTION CALL ===")
-            # print("Item type:", item.type)
-            # print("Function name:", item.name)
-            # print("Call ID:", item.call_id)
-            # print("Arguments:", item.arguments)
-            # print("Parsed arguments:", json.loads(item.arguments))
-            # print("Function result:", result)
-            # print("Result type:", type(result))
-            # print("input list: ", input_list)
-            # ---- delete above later
+    print("\nDraft is ready. Type 'quit' to exit.\n")
 
-    if input_list:
-        response = openai_client.responses.create(
-            input = input_list,
-            previous_response_id=response.id,
-            extra_body={
-                "agent_reference": {
-                    "name": agent.name,
-                    "type": "agent_reference"
-                }
-            }
-        )
-        
-        # display the agent's response
-        print(f"AGENT: {response.output_text}")
-            
+    try:
+        while True:
+            user_input = input("User: ").strip()
+            if user_input.lower() == "quit":
+                break
+            if not user_input:
+                continue
 
-project_client.agents.delete_version(
-    agent_name = agent.name,
-    agent_version=agent.version
-)
-        
-print("Agent Deleted")
+            # Run the task (blocking, in current thread)
+            runtime.run_task(user_input)
+
+            # Drain and print all events
+            while not queue.empty():
+                try:
+                    event = queue.get_nowait()
+                    _print_event(event)
+                except Exception:
+                    break
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted.")
+    finally:
+        runtime.cleanup()
+        print("Agent deleted. Goodbye.")
+
+
+if __name__ == "__main__":
+    main()
