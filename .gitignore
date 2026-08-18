@@ -5,3 +5,5 @@ __pycache__
 .superpowers/
 .mypy_cache
 .ruff_cache
+docs/
+draft.bat
