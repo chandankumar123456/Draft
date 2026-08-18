@@ -316,7 +316,7 @@ class AgentWorkspace(Widget):
         yield Static(
             "[bold]AGENT WORKSPACE[/bold]", classes="panel-title"
         )
-        yield RichLog(
+        yield SelectableRichLog(
             id="workspace-log",
             highlight=True,
             markup=True,
@@ -325,8 +325,8 @@ class AgentWorkspace(Widget):
         )
 
     @property
-    def log(self) -> RichLog:
-        return self.query_one("#workspace-log", RichLog)
+    def log(self) -> SelectableRichLog:
+        return self.query_one("#workspace-log", SelectableRichLog)
 
     def write_user_message(self, content: str) -> None:
         """Display a user message."""
@@ -684,7 +684,7 @@ class ToolInspector(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("[bold]TOOL INSPECTOR[/bold]", classes="panel-title")
-        yield RichLog(
+        yield SelectableRichLog(
             id="tool-inspector-log",
             highlight=True,
             markup=True,
@@ -692,8 +692,8 @@ class ToolInspector(Widget):
         )
 
     @property
-    def log(self) -> RichLog:
-        return self.query_one("#tool-inspector-log", RichLog)
+    def log(self) -> SelectableRichLog:
+        return self.query_one("#tool-inspector-log", SelectableRichLog)
 
     def inspect_tool(self, event: ToolStarted | ToolCompleted | ToolFailed) -> None:
         """Display detailed information about a tool call."""
@@ -758,7 +758,7 @@ class TimelineView(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("[bold]TIMELINE[/bold]", classes="panel-title")
-        yield RichLog(
+        yield SelectableRichLog(
             id="timeline-log",
             highlight=True,
             markup=True,
@@ -767,8 +767,8 @@ class TimelineView(Widget):
         )
 
     @property
-    def log(self) -> RichLog:
-        return self.query_one("#timeline-log", RichLog)
+    def log(self) -> SelectableRichLog:
+        return self.query_one("#timeline-log", SelectableRichLog)
 
     def add_event(self, event: RuntimeEvent) -> None:
         """Add an event to the timeline."""
@@ -843,7 +843,7 @@ class DiffView(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("[bold]DIFF VIEW[/bold]", classes="panel-title")
-        yield RichLog(
+        yield SelectableRichLog(
             id="diff-log",
             highlight=True,
             markup=True,
@@ -851,8 +851,8 @@ class DiffView(Widget):
         )
 
     @property
-    def log(self) -> RichLog:
-        return self.query_one("#diff-log", RichLog)
+    def log(self) -> SelectableRichLog:
+        return self.query_one("#diff-log", SelectableRichLog)
 
     def add_diff(self, path: str, diff_text: str) -> None:
         """Add a diff to the view."""
@@ -899,7 +899,7 @@ class TestPanel(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("[bold]TESTS[/bold]", classes="panel-title")
-        yield RichLog(
+        yield SelectableRichLog(
             id="test-log",
             highlight=True,
             markup=True,
@@ -907,8 +907,8 @@ class TestPanel(Widget):
         )
 
     @property
-    def log(self) -> RichLog:
-        return self.query_one("#test-log", RichLog)
+    def log(self) -> SelectableRichLog:
+        return self.query_one("#test-log", SelectableRichLog)
 
     def show_results(self, event: TestCompleted) -> None:
         """Display test results."""
@@ -961,7 +961,7 @@ class GitPanel(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("[bold]GIT[/bold]", classes="panel-title")
-        yield RichLog(
+        yield SelectableRichLog(
             id="git-log",
             highlight=True,
             markup=True,
@@ -969,8 +969,8 @@ class GitPanel(Widget):
         )
 
     @property
-    def log(self) -> RichLog:
-        return self.query_one("#git-log", RichLog)
+    def log(self) -> SelectableRichLog:
+        return self.query_one("#git-log", SelectableRichLog)
 
     def refresh_git_info(self) -> None:
         """Fetch and display current git information."""
