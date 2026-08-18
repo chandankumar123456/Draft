@@ -20,6 +20,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -62,6 +64,113 @@ from events import (
     ToolStarted,
     UserMessage,
 )
+
+
+# ════════════════════════════════════════════════════════════════
+# SELECTABLE RICH LOG
+# ════════════════════════════════════════════════════════════════
+
+class SelectableRichLog(RichLog):
+    """A RichLog that supports drag-to-select text.
+
+    Textual's ``RichLog`` does not implement the widget selection
+    protocol (``get_selection`` / ``selection_updated``), so dragging
+    the mouse over log content produces no selection and nothing can
+    be copied. This subclass adds:
+
+    * ``get_selection`` — extract the selected text from the log lines
+      so ``Screen.get_selected_text()`` works.
+    * ``selection_updated`` — repaint when the selection changes.
+    * Content offset metadata and selection styling in ``_render_line``
+      so precise ranges are highlighted while dragging.
+
+    The app copies the selection to the clipboard on mouse release via
+    its ``on_text_selected`` handler.
+    """
+
+    ALLOW_SELECT = True
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Get the text under the given selection.
+
+        Args:
+            selection: Selection information.
+
+        Returns:
+            Tuple of extracted text and line ending, or ``None`` if no
+            text could be extracted.
+        """
+        text = "\n".join(strip.text.rstrip() for strip in self.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        """Repaint the log when the selection changes."""
+        self._line_cache.clear()
+        self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        """Render a line of content.
+
+        Args:
+            y: Y coordinate of the line.
+
+        Returns:
+            A rendered line with the selection highlight applied.
+        """
+        scroll_x, scroll_y = self.scroll_offset
+        return self._render_line(
+            scroll_y + y,
+            scroll_x,
+            self.scrollable_content_region.width,
+        )
+
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        """Render a line with selection highlighting and offset metadata.
+
+        Args:
+            y: Y offset of the line (content coordinates).
+            scroll_x: Current horizontal scroll.
+            width: Width of the widget.
+
+        Returns:
+            A Strip suitable for rendering.
+        """
+        if y >= len(self.lines):
+            return Strip.blank(width, self.rich_style)
+
+        key = (y + self._start_line, scroll_x, width, self._widest_line_width)
+        selection = self.text_selection
+        if selection is None and key in self._line_cache:
+            return self._line_cache[key]
+
+        line = self.lines[y].crop_extend(
+            scroll_x, scroll_x + width, self.rich_style
+        )
+        line = line.apply_style(self.rich_style)
+
+        if selection is not None:
+            span = selection.get_span(y)
+            if span is not None:
+                span_start, span_end = span
+                if span_end == -1:
+                    span_end = scroll_x + width
+                start = max(span_start - scroll_x, 0)
+                end = min(span_end - scroll_x, width)
+                if end > start:
+                    selection_style = self.screen.get_component_rich_style(
+                        "screen--selection"
+                    )
+                    before = line.crop_extend(0, start, self.rich_style)
+                    selected = line.crop_extend(start, end, self.rich_style)
+                    selected = selected.apply_style(selection_style)
+                    after = line.crop_extend(end, width, self.rich_style)
+                    line = before + selected + after
+
+        # Offset metadata lets the compositor report precise content
+        # offsets when the mouse is pressed, enabling exact selections.
+        line = line.apply_offsets(scroll_x, y)
+        self._line_cache[key] = line
+        return line
 
 
 # ════════════════════════════════════════════════════════════════
