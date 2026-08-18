@@ -172,6 +172,7 @@ class DraftApp(App):
         self._model = os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini")
         self._branch = self._detect_branch()
         self._project_name = self._detect_project_name()
+        self._last_esc_time: float = 0.0
 
     def _detect_branch(self) -> str:
         try:
@@ -249,6 +250,12 @@ class DraftApp(App):
             level="info",
         )
 
+        # Focus input field
+        try:
+            self.query_one("#prompt-input", PromptInput).focus_input()
+        except Exception:
+            pass
+
         # Initialize agent in background
         self._init_agent()
 
@@ -306,7 +313,93 @@ class DraftApp(App):
             except Exception:
                 continue
 
+    # ── Key & Control Bar Events ────────────────────────────────
+
+    def on_key(self, event) -> None:
+        """Handle global key events (e.g. double-Esc stop)."""
+        if event.key == "escape":
+            if len(self.screen_stack) > 1:
+                return
+
+            if self._runtime and self._runtime.is_running:
+                import time
+                now = time.time()
+                if now - self._last_esc_time <= 1.5:
+                    self._last_esc_time = 0.0
+                    self.action_stop_agent()
+                else:
+                    self._last_esc_time = now
+                    workspace = self.query_one("#agent-workspace", AgentWorkspace)
+                    workspace.write_system_message(
+                        "Press Esc again to STOP running agent.",
+                        level="warning",
+                    )
+        elif event.key == "up":
+            try:
+                prompt_input = self.query_one("#prompt-input", PromptInput)
+                inp = prompt_input.query_one("#prompt-input")
+                if inp.has_focus:
+                    prompt_input.navigate_history(-1)
+            except Exception:
+                pass
+        elif event.key == "down":
+            try:
+                prompt_input = self.query_one("#prompt-input", PromptInput)
+                inp = prompt_input.query_one("#prompt-input")
+                if inp.has_focus:
+                    prompt_input.navigate_history(1)
+            except Exception:
+                pass
+
+    def on_footer_bar_action_requested(
+        self, message: FooterBar.ActionRequested
+    ) -> None:
+        """Handle button clicks from the interactive footer control bar."""
+        action = message.action_name
+        if action == "send":
+            try:
+                prompt_input = self.query_one("#prompt-input", PromptInput)
+                prompt_input.submit_current()
+            except Exception:
+                pass
+        elif action == "stop":
+            self.action_stop_agent()
+        elif action == "history":
+            try:
+                prompt_input = self.query_one("#prompt-input", PromptInput)
+                prompt_input.focus_input()
+                prompt_input.navigate_history(-1)
+            except Exception:
+                pass
+        elif action == "files":
+            self.action_toggle_project()
+        elif action == "tools":
+            self.action_open_tools()
+        elif action == "diff":
+            self.action_open_diff()
+        elif action == "git":
+            self.action_open_git()
+        elif action == "logs":
+            self.action_open_timeline()
+        elif action == "cmd":
+            self.action_command_palette()
+        elif action == "exit":
+            self.action_quit_app()
+
     # ── Event Handling ────────────────────────────────────────
+
+    def _set_app_status(self, status: str) -> None:
+        """Helper to update header and footer agent status simultaneously."""
+        try:
+            header = self.query_one("#status-header", StatusHeader)
+            header.status = status
+        except Exception:
+            pass
+        try:
+            footer = self.query_one("#footer-bar", FooterBar)
+            footer.agent_status = status
+        except Exception:
+            pass
 
     def on_runtime_event_received(
         self, message: RuntimeEventReceived
@@ -317,7 +410,6 @@ class DraftApp(App):
         # Route to workspace
         workspace = self.query_one("#agent-workspace", AgentWorkspace)
         state_panel = self.query_one("#agent-state", AgentStatePanel)
-        header = self.query_one("#status-header", StatusHeader)
 
         # Timeline always gets everything
         try:
@@ -334,31 +426,48 @@ class DraftApp(App):
             workspace.write_agent_message(event.content)
 
         elif isinstance(event, AgentStarted):
-            header.status = "RUNNING"
+            self._set_app_status("RUNNING")
+            workspace.start_thinking("Agent is thinking...")
             state_panel.update_from_event(event)
 
         elif isinstance(event, AgentCompleted):
-            header.status = "COMPLETED"
+            self._set_app_status("COMPLETED")
+            workspace.stop_thinking()
             state_panel.update_from_event(event)
+            try:
+                self.query_one("#prompt-input", PromptInput).focus_input()
+            except Exception:
+                pass
 
         elif isinstance(event, AgentFailed):
-            header.status = "FAILED"
+            self._set_app_status("FAILED")
+            workspace.stop_thinking()
             state_panel.update_from_event(event)
             workspace.write_system_message(
                 f"Agent failed: {event.error}", level="error"
             )
+            try:
+                self.query_one("#prompt-input", PromptInput).focus_input()
+            except Exception:
+                pass
 
         elif isinstance(event, AgentCancelled):
-            header.status = "CANCELLED"
+            self._set_app_status("CANCELLED")
+            workspace.stop_thinking()
             workspace.write_system_message("Agent cancelled.", level="warning")
+            try:
+                self.query_one("#prompt-input", PromptInput).focus_input()
+            except Exception:
+                pass
 
         elif isinstance(event, AgentPhaseChanged):
             state_panel.update_from_event(event)
 
         elif isinstance(event, ToolStarted):
+            self._set_app_status("WAITING")
+            workspace.start_thinking(f"Executing tool {event.tool_name}...")
             workspace.write_tool_started(event)
             state_panel.update_from_event(event)
-            # Update tool inspector
             try:
                 inspector = self.query_one("#tool-inspector", ToolInspector)
                 inspector.inspect_tool(event)
@@ -366,6 +475,8 @@ class DraftApp(App):
                 pass
 
         elif isinstance(event, ToolCompleted):
+            self._set_app_status("RUNNING")
+            workspace.start_thinking("Agent processing tool result...")
             workspace.write_tool_completed(event)
             state_panel.update_from_event(event)
             try:
@@ -375,6 +486,7 @@ class DraftApp(App):
                 pass
 
         elif isinstance(event, ToolFailed):
+            self._set_app_status("RUNNING")
             workspace.write_tool_failed(event)
             state_panel.update_from_event(event)
 
@@ -413,7 +525,11 @@ class DraftApp(App):
 
         elif isinstance(event, GitStatusChanged):
             self._branch = self._detect_branch()
-            header.branch = self._branch
+            try:
+                header = self.query_one("#status-header", StatusHeader)
+                header.branch = self._branch
+            except Exception:
+                pass
             try:
                 git_panel = self.query_one("#git-panel", GitPanel)
                 git_panel.refresh_git_info()
@@ -448,12 +564,16 @@ class DraftApp(App):
         if self._runtime.is_running:
             workspace = self.query_one("#agent-workspace", AgentWorkspace)
             workspace.write_system_message(
-                "Agent is busy. Wait for it to finish or press Ctrl+C.",
+                "Agent is busy. Press Esc Esc or click Stop to cancel.",
                 level="warning",
             )
             return
 
         # Launch agent task in a background thread
+        workspace = self.query_one("#agent-workspace", AgentWorkspace)
+        self._set_app_status("RUNNING")
+        workspace.start_thinking("Agent is starting...")
+
         self.run_worker(
             lambda: self._runtime.run_task(prompt),
             thread=True,
@@ -591,12 +711,23 @@ class DraftApp(App):
 
     def action_stop_agent(self) -> None:
         """Cancel the current agent task."""
-        if self._runtime is not None:
-            self._runtime.cancel()
+        self._set_app_status("CANCELLED")
+        try:
             workspace = self.query_one("#agent-workspace", AgentWorkspace)
+            workspace.stop_thinking()
             workspace.write_system_message(
-                "Cancellation requested.", level="warning"
+                "Agent task stopped by user.", level="warning"
             )
+        except Exception:
+            pass
+
+        if self._runtime is not None and self._runtime.is_running:
+            self._runtime.cancel()
+
+        try:
+            self.query_one("#prompt-input", PromptInput).focus_input()
+        except Exception:
+            pass
 
     def action_refresh_project(self) -> None:
         """Refresh the project explorer."""

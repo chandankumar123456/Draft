@@ -19,7 +19,7 @@ from tui.widgets.panels import (
     TimelineView,
 )
 from tui.widgets.state import AgentStatePanel, StatusHeader
-from tui.widgets.workspace import AgentWorkspace
+from tui.widgets.workspace import AgentWorkspace, ThinkingIndicator
 
 __all__ = [
     "AgentStatePanel",
@@ -33,6 +33,7 @@ __all__ = [
     "SelectableRichLog",
     "StatusHeader",
     "TestPanel",
+    "ThinkingIndicator",
     "TimelineView",
     "ToolInspector",
 ]
