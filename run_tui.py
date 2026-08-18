@@ -1,29 +1,21 @@
-"""Launch script for the Draft Developer Cockpit.
-
-Usage:
-    python run_tui.py
-
-This sets up the Python path correctly so that both the agent
-modules and the TUI modules can be imported.
-"""
+"""Launch script for the Draft Developer Cockpit."""
 
 import os
 import sys
 
-# Project root
-project_root = os.path.dirname(os.path.abspath(__file__))
+# Keep the directory containing the application source/runtime
+# available for development-mode imports.
+if not getattr(sys, "frozen", False):
+    project_root = os.path.dirname(os.path.abspath(__file__))
 
-# Add agent directory to path (for events, runtime, etc.)
-agent_dir = os.path.join(project_root, "agent")
-if agent_dir not in sys.path:
-    sys.path.insert(0, agent_dir)
+    agent_dir = os.path.join(project_root, "agent")
 
-# Add project root to path (for tui package)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+    if agent_dir not in sys.path:
+        sys.path.insert(0, agent_dir)
 
-# Ensure we run from the project root (for relative paths in tools)
-os.chdir(project_root)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 
 from tui.app import DraftApp
 

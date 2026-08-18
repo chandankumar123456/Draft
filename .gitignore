@@ -6,3 +6,8 @@ __pycache__
 .mypy_cache
 .ruff_cache
 docs/
+Draft.spec
+build/
+dist/
+Installer/
+draft.bat
