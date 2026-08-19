@@ -86,6 +86,7 @@ RISK_CLASSIFICATION: dict[RiskLevel, frozenset[str]] = {
         "generate_uuid",
         "search_web",
         "fetch_url",
+        "spawn_subagent",
     }),
     RiskLevel.REQUIRES_APPROVAL: frozenset({
         "write_file",

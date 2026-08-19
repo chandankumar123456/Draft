@@ -974,6 +974,34 @@ generate_uuid_tool = make_tool(
 )
 
 
+spawn_subagent_tool = make_tool(
+    "spawn_subagent",
+    "Delegate a bounded subtask to a specialist subagent. "
+    "Roles: investigator (explore/search/research), implementer "
+    "(write and edit code), verifier (run tests/lint/typecheck). "
+    "Give the subagent a self-contained task with all needed context. "
+    'Returns {"success", "data": {"role", "summary", "iterations", '
+    '"tool_calls", "duration_seconds"}, "message", "error"}.',
+    {
+        "role": {
+            "type": "string",
+            "enum": ["investigator", "implementer", "verifier"],
+            "description": "Specialist role to delegate to.",
+        },
+        "task": {
+            "type": "string",
+            "description": "Self-contained task for the subagent. "
+                           "It cannot see this conversation.",
+        },
+        "timeout": {
+            "type": "integer",
+            "description": "Maximum seconds to wait (default 300).",
+        },
+    },
+    ["role", "task"],
+)
+
+
 # ============================================================
 # ALL TOOLS
 # ============================================================
@@ -1046,4 +1074,7 @@ ALL_TOOLS = [
     get_current_time_tool,
     calculate_tool,
     generate_uuid_tool,
+
+    # Subagents
+    spawn_subagent_tool,
 ]

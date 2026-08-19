@@ -59,6 +59,8 @@ from tools.functions import (
     generate_uuid,
 )
 
+from subagents import spawn_subagent
+
 
 TOOL_REGISTRY = {
     "list_files": list_files,
@@ -119,4 +121,6 @@ TOOL_REGISTRY = {
     "get_current_time": get_current_time,
     "calculate": calculate,
     "generate_uuid": generate_uuid,
+
+    "spawn_subagent": spawn_subagent,
 }
