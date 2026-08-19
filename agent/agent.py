@@ -22,6 +22,10 @@ from events import (
     AgentFailed,
     AgentMessage,
     RuntimeEvent,
+    SubagentCompleted,
+    SubagentFailed,
+    SubagentMessage,
+    SubagentStarted,
     SystemMessage,
     ToolCompleted,
     ToolFailed,
@@ -55,6 +59,16 @@ def _print_event(event: RuntimeEvent) -> None:
         print(f"\n[FAILED] {event.error}")
     elif isinstance(event, SystemMessage):
         print(f"[SYSTEM] {event.content}")
+
+    elif isinstance(event, SubagentStarted):
+        print(f"\n[SUBAGENT:{event.role}] {event.task[:120]}")
+    elif isinstance(event, SubagentMessage):
+        print(f"[SUBAGENT:{event.role}] {event.content[:400]}")
+    elif isinstance(event, SubagentCompleted):
+        print(f"[SUBAGENT:{event.role}] done ({event.iterations} iterations, "
+              f"{event.tool_calls} tool calls)")
+    elif isinstance(event, SubagentFailed):
+        print(f"[SUBAGENT:{event.role}] failed: {event.error}")
 
 
 def _first_run_prompt() -> tuple[str, str] | None:

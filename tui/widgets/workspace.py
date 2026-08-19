@@ -232,6 +232,32 @@ class AgentWorkspace(Widget):
         )
         self.log.write(f"\n[{color}]SYSTEM: {escape(content)}[/{color}]")
 
+    # ── Subagent events ─────────────────────────────────────────
+
+    def write_subagent_started(self, event) -> None:
+        """Display a subagent task starting."""
+        self.log.write(
+            f"\n[bold magenta]SUBAGENT[/bold magenta]  "
+            f"[bold]{escape(event.role)}[/bold]  "
+            f"[yellow]RUNNING[/yellow]\n"
+            f"  [dim]{escape(event.task[:200])}[/dim]"
+        )
+
+    def write_subagent_message(self, event) -> None:
+        """Display a subagent's report text."""
+        self.log.write(
+            f"\n[bold magenta]SUBAGENT {escape(event.role)}[/bold magenta]\n"
+            f"  [dim]{escape(event.content[:400])}[/dim]"
+        )
+
+    def write_subagent_failed(self, event) -> None:
+        """Display a subagent failure."""
+        self.log.write(
+            f"\n[bold magenta]SUBAGENT {escape(event.role)}[/bold magenta]  "
+            f"[red]FAILED[/red]\n"
+            f"  [dim]{escape(event.error[:300])}[/dim]"
+        )
+
     # ── Tool events ─────────────────────────────────────────────
 
     def write_tool_started(self, event: ToolStarted) -> None:

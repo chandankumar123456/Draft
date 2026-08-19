@@ -63,6 +63,10 @@ from events import (
     PatchApplied,
     PatchFailed,
     RuntimeEvent,
+    SubagentCompleted,
+    SubagentFailed,
+    SubagentMessage,
+    SubagentStarted,
     SystemMessage,
     TestCompleted,
     TestFailed,
@@ -474,6 +478,22 @@ class DraftApp(App):
 
         elif isinstance(event, AgentPhaseChanged):
             state_panel.update_from_event(event)
+
+        elif isinstance(event, SubagentStarted):
+            workspace.write_subagent_started(event)
+
+        elif isinstance(event, SubagentMessage):
+            workspace.write_subagent_message(event)
+
+        elif isinstance(event, SubagentFailed):
+            workspace.write_subagent_failed(event)
+
+        elif isinstance(event, SubagentCompleted):
+            workspace.write_system_message(
+                f"Subagent '{event.role}' completed: {event.iterations} "
+                f"iterations, {event.tool_calls} tool calls.",
+                level="info",
+            )
 
         elif isinstance(event, ToolStarted):
             self._set_app_status("WAITING")
