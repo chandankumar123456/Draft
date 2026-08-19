@@ -176,9 +176,16 @@ def ensure_loaded() -> None:
 def load_config() -> Config:
     """Return the active configuration (file -> env -> defaults)."""
     ensure_loaded()
+    data: dict[str, str] = {}
+    path = config_path()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = {}
     return Config(
-        endpoint=os.getenv("PROJECT_ENDPOINT", "").strip(),
-        model=(os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini").strip()
+        endpoint=(data.get("endpoint") or os.getenv("PROJECT_ENDPOINT", "")).strip(),
+        model=(data.get("model") or os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini").strip()
                or "gpt-4.1-mini"),
     )
 
@@ -210,10 +217,12 @@ def save_config(endpoint: str | None = None, model: str | None = None) -> None:
 
 
 def clear_config() -> None:
-    """Delete the config file if it exists."""
+    """Delete the config file and unset the config env vars."""
     path = config_path()
     if path.exists():
         path.unlink()
+    os.environ.pop("PROJECT_ENDPOINT", None)
+    os.environ.pop("MODEL_DEPLOYMENT", None)
 ```
 
 - [ ] **Step 4: Add `.draft/` to `.gitignore`**
@@ -242,6 +251,7 @@ git commit -m "feat: persist endpoint/model config in .draft/config.json"
 
 **Files:**
 - Modify: `agent/credential.py` (remove `save_config`, use `config.ensure_loaded`)
+- Modify: `agent/runtime.py` (import `save_config` from `config` instead of `credential`)
 - Modify: `agent/agent.py` (first-run prompt; subagent event handlers are added in Task 8 — do NOT add them here)
 - Test: `agent/tests/test_config.py` (append CLI prompt tests)
 
@@ -292,6 +302,21 @@ ensure_loaded()
 ```
 
 The file keeps `get_project_client`, `get_openai_client`, and the module-level client refs unchanged.
+
+- [ ] **Step 3b: Update the `save_config` import in `agent/runtime.py`**
+
+`runtime.py` line 31 imports `save_config` from `credential`, which no longer defines it. Replace:
+
+```python
+from credential import get_openai_client, get_project_client, save_config
+```
+
+with:
+
+```python
+from config import save_config
+from credential import get_openai_client, get_project_client
+```
 
 - [ ] **Step 4: Update `agent/agent.py`**
 
@@ -1323,6 +1348,20 @@ and register it at the end of `TOOL_REGISTRY`:
     "spawn_subagent": spawn_subagent,
 ```
 
+In `agent/dispatcher.py`, add `spawn_subagent` to the `SAFE` risk set so the classification table stays explicit (unknown tools already default to `SAFE`, so behavior is unchanged):
+
+```python
+    RiskLevel.SAFE: frozenset({
+        "check_syntax",
+        "get_current_time",
+        "calculate",
+        "generate_uuid",
+        "search_web",
+        "fetch_url",
+        "spawn_subagent",
+    }),
+```
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd agent && python -m pytest tests/test_subagents.py -q`
@@ -1450,7 +1489,7 @@ In `__init__`, after `self._input_list: ResponseInputParam = []` add:
         self._subagent_versions: list[Any] = []
 ```
 
-In `initialize()`, inside the `try` block after the main agent creation, and after `self.event_bus.emit_threadsafe(SystemMessage(content="Draft agent initialized and ready.", level="info",))` replaced by registration, insert:
+In `initialize()`, inside the `try` block, after the main agent creation and after its `SystemMessage` ("Draft agent initialized and ready."), insert the sub-agent registration block:
 
 ```python
             o_client_rt = get_openai_client(self.endpoint)
@@ -1498,7 +1537,7 @@ In `cleanup()`, after the main-agent deletion block (before `def cancel`) add:
         self._subagent_versions = []
 ```
 
-In `_execute_loop`, inside the `while iteration < max_iterations:` block, after the `output_items = getattr(response, "output", []) or []` line and before the `for item in output_items:` loop, insert the spawn grouping:
+In `_execute_loop`, inside the `while iteration < max_iterations:` block, after the FIRST `output_items = getattr(response, "output", []) or []` line (the one followed by the `for item in output_items:` loop — do not touch the second occurrence after the follow-up `responses.create`), insert the spawn grouping:
 
 ```python
             # Group spawn_subagent calls for parallel execution
