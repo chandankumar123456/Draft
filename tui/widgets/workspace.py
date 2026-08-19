@@ -183,6 +183,7 @@ class AgentWorkspace(Widget):
             ("/endpoint [url]", "Change the Azure AI project endpoint"),
             ("/model [name]", "Change the model deployment name"),
             ("/exit", "Exit Draft Developer Cockpit"),
+            ("/config-reset", "Clear saved config and re-enter endpoint/model"),
         ]
         self.log.write(
             "\n[bold cyan]Available Slash Commands[/bold cyan]\n"
@@ -220,7 +221,8 @@ class AgentWorkspace(Widget):
             "\n[bold cyan]Current Configuration[/bold cyan]\n"
             f"  [bold]Project Endpoint:[/bold] [yellow]{endpoint or '(not set)'}[/yellow]\n"
             f"  [bold]Model Deployment:[/bold] [green]{model or '(not set)'}[/green]\n"
-            "\n[dim]To update configuration: use /endpoint <url> or /model <name> or /config[/dim]"
+            "\n[dim]To update configuration: use /endpoint <url> or /model <name> or /config[/dim]\n"
+            "[dim]To start over: /config-reset[/dim]"
         )
 
     def write_system_message(self, content: str, level: str = "info") -> None:

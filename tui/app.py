@@ -73,6 +73,8 @@ from events import (
 )
 from runtime import AgentRuntime
 
+from config import clear_config, load_config, save_config
+
 from tui.messages import RuntimeEventReceived
 from tui.screens import (
     ConfigModal,
@@ -260,9 +262,8 @@ class DraftApp(App):
             pass
 
         # Check required configuration
-        endpoint = os.getenv("PROJECT_ENDPOINT", "").strip()
-        model = os.getenv("MODEL_DEPLOYMENT", "").strip()
-        if not endpoint or not model:
+        cfg = load_config()
+        if not cfg.endpoint:
             self.action_show_config(mandatory=True)
         else:
             self._init_agent()
@@ -667,6 +668,17 @@ class DraftApp(App):
                     level="info",
                 )
 
+        elif cmd == "/config-reset":
+            workspace.write_system_message(
+                "Configuration cleared. Re-enter your endpoint and model.",
+                level="warning",
+            )
+            if self._runtime is not None:
+                self._runtime.cleanup()
+                self._runtime = None
+            clear_config()
+            self.action_show_config(mandatory=True)
+
         elif cmd in ("/exit", "/quit"):
             self.action_quit_app()
 
@@ -688,6 +700,7 @@ class DraftApp(App):
             return
 
         os.environ["PROJECT_ENDPOINT"] = clean_endpoint
+        save_config(endpoint=clean_endpoint)
         if self._runtime is not None:
             self._runtime.reconfigure(endpoint=clean_endpoint)
         else:
@@ -714,6 +727,7 @@ class DraftApp(App):
         except Exception:
             pass
         os.environ["MODEL_DEPLOYMENT"] = clean_model
+        save_config(model=clean_model)
         if self._runtime is not None:
             self._runtime.reconfigure(model=clean_model)
         else:
@@ -743,6 +757,7 @@ class DraftApp(App):
                 pass
             os.environ["PROJECT_ENDPOINT"] = endpoint
             os.environ["MODEL_DEPLOYMENT"] = model
+            save_config(endpoint=endpoint, model=model)
 
             workspace = self.query_one("#agent-workspace", AgentWorkspace)
             if self._runtime is not None:
