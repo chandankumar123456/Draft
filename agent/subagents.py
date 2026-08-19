@@ -185,11 +185,18 @@ def run_subagent(
 
         for _ in range(MAX_SUBAGENT_ITERATIONS):
             if cancel_event.is_set():
+                event_bus.emit_threadsafe(SubagentFailed(
+                    role=role, task=task, error="Subagent cancelled by user.",
+                ))
                 return failure(
                     "Subagent cancelled by user.",
                     data={"role": role, "task": task, "iterations": iterations},
                 )
             if time.monotonic() > deadline:
+                event_bus.emit_threadsafe(SubagentFailed(
+                    role=role, task=task,
+                    error=f"Subagent timed out after {timeout}s.",
+                ))
                 return failure(
                     f"Subagent timed out after {timeout}s.",
                     data={"role": role, "task": task, "iterations": iterations},
@@ -207,6 +214,11 @@ def run_subagent(
                 },
             )
             if getattr(response, "status", "") == "failed":
+                event_bus.emit_threadsafe(SubagentFailed(
+                    role=role, task=task,
+                    error=f"Subagent response failed: "
+                         f"{getattr(response, 'error', 'Unknown error')}",
+                ))
                 return failure(
                     f"Subagent response failed: "
                     f"{getattr(response, 'error', 'Unknown error')}",
@@ -251,6 +263,11 @@ def run_subagent(
                 })
             input_list = outputs_list
         else:
+            event_bus.emit_threadsafe(SubagentFailed(
+                role=role, task=task,
+                error=f"Subagent exceeded iteration budget "
+                      f"({MAX_SUBAGENT_ITERATIONS}).",
+            ))
             return failure(
                 f"Subagent exceeded iteration budget "
                 f"({MAX_SUBAGENT_ITERATIONS}).",
