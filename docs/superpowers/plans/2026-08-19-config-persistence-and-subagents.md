@@ -279,11 +279,34 @@ def test_first_run_prompt_asks_and_returns_values(monkeypatch):
     assert model == "gpt-4.1-mini"
 
 
-def test_first_run_prompt_empty_endpoint_returns_none(monkeypatch):
+def test_first_run_prompt_retries_blank_endpoint(monkeypatch):
     clear_config()
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    answers = iter(["", "  ", "https://typed.azure.com", "gpt-4.1-mini"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     from agent import _first_run_prompt  # noqa: PLC0415
-    assert _first_run_prompt() is None
+    endpoint, model = _first_run_prompt()
+    assert endpoint == "https://typed.azure.com"
+    assert model == "gpt-4.1-mini"
+
+
+def test_first_run_prompt_exit_command(monkeypatch):
+    clear_config()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
+    from agent import _first_run_prompt  # noqa: PLC0415
+    with pytest.raises(SystemExit):
+        _first_run_prompt()
+
+
+def test_first_run_prompt_persists_config(monkeypatch, tmp_path):
+    clear_config()
+    answers = iter(["https://typed.azure.com", "gpt-4.1-mini"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    from agent import _first_run_prompt  # noqa: PLC0415
+    endpoint, model = _first_run_prompt()
+    save_config(endpoint=endpoint, model=model)
+    data = json.loads(config_path().read_text(encoding="utf-8"))
+    assert data["endpoint"] == "https://typed.azure.com"
+    assert data["model"] == "gpt-4.1-mini"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -320,26 +343,34 @@ from credential import get_openai_client, get_project_client
 
 - [ ] **Step 4: Update `agent/agent.py`**
 
-Add imports and the prompt helper; call it in `main()` before runtime initialization:
+Add imports and the prompt helper (place it next to `main`):
 
 ```python
 from config import load_config, save_config
 
 
 def _first_run_prompt() -> tuple[str, str] | None:
-    """Prompt for endpoint/model on first run; None when configured."""
+    """Prompt for endpoint/model on first run; None when configured.
+
+    Re-prompts until a non-blank endpoint is given. Typing "exit" or
+    "quit" exits the program cleanly instead of configuring anything.
+    """
     cfg = load_config()
     if cfg.endpoint:
         return None
     print("First run: configure your Azure AI Foundry connection.")
-    endpoint = input("Project endpoint URL: ").strip()
-    if not endpoint:
-        return None
+    endpoint = ""
+    while not endpoint:
+        endpoint = input("Project endpoint URL: ").strip()
+        if endpoint.lower() in {"exit", "quit"}:
+            sys.exit(0)
+        if not endpoint:
+            print("Endpoint cannot be empty.")
     model = input(f"Model deployment name [{cfg.model}]: ").strip() or cfg.model
     return endpoint, model
 ```
 
-In `main()`, immediately before `# Initialize the agent`:
+In `main()`, at the very top — BEFORE `event_bus = EventBus()` and the `AgentRuntime(...)` construction, so the first session picks up the saved endpoint AND model from the environment (the runtime reads them at construction):
 
 ```python
     first_run = _first_run_prompt()
@@ -352,12 +383,12 @@ In `main()`, immediately before `# Initialize the agent`:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd agent && python -m pytest tests/test_config.py -q`
-Expected: 9 passed
+Expected: 11 passed
 
 - [ ] **Step 6: Run the existing agent suite for regressions**
 
 Run: `cd agent && python -m pytest tests -q`
-Expected: all pass (122 existing + 9 new)
+Expected: all pass (128 existing + 5 new = 133)
 
 - [ ] **Step 7: Commit**
 
