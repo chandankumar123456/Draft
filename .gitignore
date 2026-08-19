@@ -1,6 +1,7 @@
 Plan/*.png
 /draft_venv
 .env
+.draft/
 __pycache__
 .superpowers/
 .mypy_cache
