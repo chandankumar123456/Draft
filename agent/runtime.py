@@ -50,6 +50,9 @@ from events import (
 from instructions import instructions
 from tools.tools import ALL_TOOLS
 
+import subagents
+from tools.functions import failure
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,6 +94,7 @@ class AgentRuntime:
         self._agent: Any = None
         self._conversation: Any = None
         self._input_list: ResponseInputParam = []
+        self._subagent_versions: list[Any] = []
 
     # ── Lifecycle ─────────────────────────────────────────────
 
@@ -132,6 +136,36 @@ class AgentRuntime:
                 content="Draft agent initialized and ready.",
                 level="info",
             ))
+
+            o_client_rt = get_openai_client(self.endpoint)
+            for role, role_def in subagents.SUBAGENT_ROLES.items():
+                try:
+                    version = p_client.agents.create_version(
+                        agent_name=role_def.agent_name,
+                        definition=PromptAgentDefinition(
+                            model=self.model,
+                            instructions=role_def.instructions,
+                            tools=[WebSearchTool(), *subagents.role_tool_defs(role)],
+                        ),
+                    )
+                    self._subagent_versions.append(version)
+                    self.event_bus.emit_threadsafe(SystemMessage(
+                        content=f"Registered subagent '{role_def.agent_name}' ({role}).",
+                        level="info",
+                    ))
+                except Exception as exc:
+                    self.event_bus.emit_threadsafe(SystemMessage(
+                        content=f"Failed to register subagent '{role_def.agent_name}': {exc}",
+                        level="warning",
+                    ))
+
+            if o_client_rt is not None:
+                subagents.configure_subagents(
+                    openai_client=o_client_rt,
+                    dispatcher=self.dispatcher,
+                    event_bus=self.event_bus,
+                    cancel_event=self._cancel_event,
+                )
         except Exception as exc:
             self.event_bus.emit_threadsafe(SystemMessage(
                 content=f"Failed to initialize agent: {exc}",
@@ -184,6 +218,16 @@ class AgentRuntime:
                 logger.warning("Failed to cleanup agent: %s", exc)
             finally:
                 self._agent = None
+
+        for version in self._subagent_versions:
+            try:
+                p_client.agents.delete_version(
+                    agent_name=version.name,
+                    agent_version=version.version,
+                )
+            except Exception as exc:
+                logger.warning("Failed to cleanup subagent %s: %s", version.name, exc)
+        self._subagent_versions = []
 
     def cancel(self) -> None:
         """Signal the runtime to stop the current task."""
@@ -313,6 +357,45 @@ class AgentRuntime:
             has_function_calls = False
 
             output_items = getattr(response, "output", []) or []
+
+            # Group spawn_subagent calls for parallel execution
+            spawn_calls: list[tuple[str, str, int] | None] = []
+            spawn_items: list[Any] = []
+            for item in output_items:
+                if getattr(item, "type", "") != "function_call":
+                    continue
+                if getattr(item, "name", "") != "spawn_subagent":
+                    continue
+                spawn_items.append(item)
+                try:
+                    spawn_args = json.loads(item.arguments)
+                except (json.JSONDecodeError, AttributeError):
+                    spawn_calls.append(None)
+                else:
+                    spawn_calls.append((
+                        str(spawn_args.get("role", "")),
+                        str(spawn_args.get("task", "")),
+                        int(spawn_args.get("timeout") or subagents.DEFAULT_SUBAGENT_TIMEOUT),
+                    ))
+            spawn_results: dict[str, dict[str, Any]] = {}
+            spawn_parsed: dict[str, dict[str, Any]] = {}
+            if spawn_items:
+                valid_calls = [c for c in spawn_calls if c is not None]
+                outcomes = subagents.run_batch(valid_calls) if valid_calls else []
+                outcome_iter = iter(outcomes)
+                for item, call in zip(spawn_items, spawn_calls):
+                    if call is None:
+                        spawn_results[item.call_id] = failure(
+                            "Invalid JSON arguments for spawn_subagent"
+                        )
+                    else:
+                        spawn_results[item.call_id] = next(outcome_iter)
+                        spawn_parsed[item.call_id] = {
+                            "role": call[0],
+                            "task": call[1],
+                            "timeout": call[2],
+                        }
+
             for item in output_items:
                 if self._cancel_event.is_set():
                     return
@@ -337,14 +420,17 @@ class AgentRuntime:
                 else:
                     # Update current tool state
                     self.state.current_tool = item.name
-                    self.state.current_tool_args = arguments
-
-                    # Dispatch through the event-emitting dispatcher
-                    result = self.dispatcher.dispatch_sync(
-                        tool_name=item.name,
-                        call_id=item.call_id,
-                        arguments=arguments,
-                    )
+                    if item.call_id in spawn_parsed:
+                        self.state.current_tool_args = spawn_parsed[item.call_id]
+                        result = spawn_results[item.call_id]
+                    else:
+                        self.state.current_tool_args = arguments
+                        # Dispatch through the event-emitting dispatcher
+                        result = self.dispatcher.dispatch_sync(
+                            tool_name=item.name,
+                            call_id=item.call_id,
+                            arguments=arguments,
+                        )
 
                     # Update file counters
                     if isinstance(result, dict) and result.get("success"):
