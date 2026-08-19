@@ -59,22 +59,23 @@ def ensure_loaded() -> None:
 
 
 def load_config() -> Config:
-    """Return the active configuration (file -> env -> defaults)."""
+    """Return the active configuration (file -> env -> defaults).
+
+    Each key falls back independently: config file, then environment,
+    then default.  A partially-populated config file (e.g. only
+    ``model``) never drops values provided only in the environment.
+    """
     ensure_loaded()
+    data: dict[str, str] = {}
     path = config_path()
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             data = {}
-        return Config(
-            endpoint=str(data.get("endpoint", "")).strip(),
-            model=(str(data.get("model", "gpt-4.1-mini")).strip()
-                   or "gpt-4.1-mini"),
-        )
     return Config(
-        endpoint=os.getenv("PROJECT_ENDPOINT", "").strip(),
-        model=(os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini").strip()
+        endpoint=(data.get("endpoint") or os.getenv("PROJECT_ENDPOINT", "")).strip(),
+        model=(data.get("model") or os.getenv("MODEL_DEPLOYMENT", "gpt-4.1-mini").strip()
                or "gpt-4.1-mini"),
     )
 

@@ -16,7 +16,6 @@ preserves call order in its results.
 from __future__ import annotations
 
 import json
-import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -35,8 +34,6 @@ from subagent_instructions import (
 )
 from tools.functions import failure, success
 from tools.tools import ALL_TOOLS
-
-logger = logging.getLogger(__name__)
 
 MAX_SUBAGENT_ITERATIONS = 25
 MAX_CONCURRENT_SUBAGENTS = 3
@@ -169,6 +166,11 @@ def run_subagent(
         role=role, task=task, agent_name=role_def.agent_name,
     ))
     start_time = time.monotonic()
+    if not isinstance(timeout, (int, float)):
+        error = f"Invalid timeout for subagent: {timeout!r}"
+        event_bus.emit_threadsafe(SubagentFailed(role=role, task=task, error=error))
+        return failure(error, data={"role": role, "task": task})
+    timeout = max(timeout, 1)
     deadline = start_time + timeout
 
     try:

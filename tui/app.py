@@ -174,6 +174,7 @@ class DraftApp(App):
         self._event_bus = EventBus()
         self._runtime: AgentRuntime | None = None
         self._event_queue: asyncio.Queue | None = None
+        self._event_consumer_worker: Worker | None = None
         self._project_visible = True
 
         # Detect project info
@@ -282,6 +283,16 @@ class DraftApp(App):
         loop = asyncio.get_event_loop()
         self._event_bus.bind_loop(loop)
 
+        # Tear down the previous consumer and queue before re-subscribing,
+        # otherwise every re-init leaves the old queue subscribed and the
+        # old consumer running (events render once per consumer).
+        if self._event_consumer_worker is not None:
+            self._event_consumer_worker.cancel()
+            self._event_consumer_worker = None
+        if self._event_queue is not None:
+            self._event_bus.remove_queue(self._event_queue)
+            self._event_queue = None
+
         # Create queue for event consumption
         self._event_queue = self._event_bus.create_queue()
 
@@ -306,7 +317,9 @@ class DraftApp(App):
 
     def _start_event_consumer(self) -> None:
         """Start the async event consumer worker."""
-        self.run_worker(self._consume_events, exclusive=False)
+        self._event_consumer_worker = self.run_worker(
+            self._consume_events, exclusive=False
+        )
 
     async def _consume_events(self) -> None:
         """Async worker: read events from the queue and post messages."""

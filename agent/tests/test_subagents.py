@@ -203,12 +203,44 @@ def test_runner_respects_cancellation(subagent_ctx):
     assert "cancelled" in result["error"].lower()
 
 
-def test_runner_timeout(subagent_ctx):
-    client = _FakeOpenAI([_FakeResponse([], output_text="late")])
+def test_runner_timeout_clamps_negative(subagent_ctx):
+    """Negative timeouts clamp to 1s instead of failing immediately."""
+    client = _FakeOpenAI([_FakeResponse([], output_text="done")])
     subagent_ctx(client)
     result = subagents.run_subagent("verifier", "x", timeout=-1)
+    assert result["success"] is True
+    assert result["data"]["summary"] == "done"
+
+
+def test_runner_timeout_expires_deadline(subagent_ctx, monkeypatch):
+    """A run that exceeds its (clamped) budget still fails with a timeout."""
+    client = _FakeOpenAI([_FakeResponse([], output_text="late")])
+    subagent_ctx(client)
+    real_monotonic = subagents.time.monotonic
+    calls = {"base": None}
+
+    def _fake_monotonic():
+        if calls["base"] is None:
+            calls["base"] = real_monotonic()
+            return calls["base"]
+        return calls["base"] + 5.0
+
+    monkeypatch.setattr(subagents.time, "monotonic", _fake_monotonic)
+    result = subagents.run_subagent("verifier", "x", timeout=1)
     assert result["success"] is False
     assert "timed out" in result["error"]
+
+
+def test_runner_invalid_timeout_fails_cleanly(subagent_ctx):
+    """Non-numeric timeouts fail cleanly instead of raising TypeError."""
+    client = _FakeOpenAI([])
+    _, event_bus = subagent_ctx(client)
+    result = subagents.run_subagent("verifier", "x", timeout="30 seconds")
+    assert result["success"] is False
+    assert "Invalid timeout" in result["error"]
+    emitted = [type(e).__name__ for e in event_bus.history]
+    assert "SubagentStarted" in emitted
+    assert "SubagentFailed" in emitted
 
 
 def test_run_batch_preserves_call_order(subagent_ctx):

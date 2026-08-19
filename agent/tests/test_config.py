@@ -47,6 +47,15 @@ def test_file_overrides_env(monkeypatch):
     assert cfg.endpoint == "https://from-file.azure.com"
 
 
+def test_partial_file_falls_back_to_env_per_key(monkeypatch):
+    """A file containing only `model` must not drop the env endpoint."""
+    save_config(model="gpt-4o")
+    monkeypatch.setenv("PROJECT_ENDPOINT", "https://from-env.azure.com")
+    cfg = load_config()
+    assert cfg.endpoint == "https://from-env.azure.com"
+    assert cfg.model == "gpt-4o"
+
+
 def test_env_used_when_file_missing(monkeypatch):
     monkeypatch.setenv("PROJECT_ENDPOINT", "https://from-env.azure.com")
     monkeypatch.setenv("MODEL_DEPLOYMENT", "gpt-4o")

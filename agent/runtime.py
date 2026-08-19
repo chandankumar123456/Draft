@@ -18,10 +18,6 @@ import os
 import threading
 from typing import Any
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from azure.ai.projects.models import PromptAgentDefinition, WebSearchTool
 from openai.types.responses.response_input_param import (
     FunctionCallOutput,
