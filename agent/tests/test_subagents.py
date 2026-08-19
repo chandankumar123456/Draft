@@ -1,5 +1,11 @@
 """Tests for subagent events, roles, runner, and runtime integration."""
 
+from subagent_instructions import (
+    IMPLEMENTER_INSTRUCTIONS,
+    INVESTIGATOR_INSTRUCTIONS,
+    VERIFIER_INSTRUCTIONS,
+)
+
 from events import (
     RuntimeEvent,
     SubagentCompleted,
@@ -27,3 +33,9 @@ def test_subagent_event_fields():
     assert completed.tool_calls == 0
     assert completed.duration_seconds == 0.0
     assert completed.result == ""
+
+
+def test_role_instructions_are_substantive():
+    for text in (INVESTIGATOR_INSTRUCTIONS, IMPLEMENTER_INSTRUCTIONS, VERIFIER_INSTRUCTIONS):
+        assert len(text) > 200
+        assert "Draft" in text
