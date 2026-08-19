@@ -27,6 +27,13 @@ from tui.widgets import AgentWorkspace, DiffView, PromptInput
 from tui.widgets.panels import PromptTextArea
 
 
+@pytest.fixture(autouse=True)
+def _isolate_config(tmp_path, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(config_module, "_LOADED", False)
+
+
 class DummyApp(App):
     """Test app for testing PromptInput and multiline editor."""
 
