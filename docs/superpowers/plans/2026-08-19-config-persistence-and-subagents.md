@@ -1211,11 +1211,18 @@ def run_subagent(
 
         for _ in range(MAX_SUBAGENT_ITERATIONS):
             if cancel_event.is_set():
+                event_bus.emit_threadsafe(SubagentFailed(
+                    role=role, task=task, error="Subagent cancelled by user.",
+                ))
                 return failure(
                     "Subagent cancelled by user.",
                     data={"role": role, "task": task, "iterations": iterations},
                 )
             if time.monotonic() > deadline:
+                event_bus.emit_threadsafe(SubagentFailed(
+                    role=role, task=task,
+                    error=f"Subagent timed out after {timeout}s.",
+                ))
                 return failure(
                     f"Subagent timed out after {timeout}s.",
                     data={"role": role, "task": task, "iterations": iterations},
@@ -1233,6 +1240,11 @@ def run_subagent(
                 },
             )
             if getattr(response, "status", "") == "failed":
+                event_bus.emit_threadsafe(SubagentFailed(
+                    role=role, task=task,
+                    error=f"Subagent response failed: "
+                         f"{getattr(response, 'error', 'Unknown error')}",
+                ))
                 return failure(
                     f"Subagent response failed: "
                     f"{getattr(response, 'error', 'Unknown error')}",
@@ -1277,6 +1289,11 @@ def run_subagent(
                 })
             input_list = outputs_list
         else:
+            event_bus.emit_threadsafe(SubagentFailed(
+                role=role, task=task,
+                error=f"Subagent exceeded iteration budget "
+                      f"({MAX_SUBAGENT_ITERATIONS}).",
+            ))
             return failure(
                 f"Subagent exceeded iteration budget "
                 f"({MAX_SUBAGENT_ITERATIONS}).",
@@ -1534,7 +1551,6 @@ Imports — add after `from tools.tools import ALL_TOOLS`:
 
 ```python
 import subagents
-from tools.functions import failure
 ```
 
 In `__init__`, after `self._input_list: ResponseInputParam = []` add:
@@ -1591,7 +1607,7 @@ In `cleanup()`, after the main-agent deletion block (before `def cancel`) add:
         self._subagent_versions = []
 ```
 
-In `_execute_loop`, inside the `while iteration < max_iterations:` block, after the FIRST `output_items = getattr(response, "output", []) or []` line (the one followed by the `for item in output_items:` loop — do not touch the second occurrence after the follow-up `responses.create`), insert the spawn grouping:
+In `_execute_loop`, inside the `while iteration < max_iterations:` block, after the FIRST `output_items = getattr(response, "output", []) or []` line (the one followed by the `for item in output_items:` loop — do not touch the second occurrence after the follow-up `responses.create`), insert the spawn grouping. **All** `spawn_subagent` calls in the response form ONE batch — the design mandates "All `spawn_subagent` calls in one response batch run concurrently (thread pool, max 3)", so adjacency is irrelevant; `run_batch` caps concurrency at `MAX_CONCURRENT_SUBAGENTS` and results are paired by call_id:
 
 ```python
             # Group spawn_subagent calls for parallel execution
@@ -1605,13 +1621,14 @@ In `_execute_loop`, inside the `while iteration < max_iterations:` block, after 
                 spawn_items.append(item)
                 try:
                     spawn_args = json.loads(item.arguments)
-                except (json.JSONDecodeError, AttributeError):
+                    timeout = int(spawn_args.get("timeout") or subagents.DEFAULT_SUBAGENT_TIMEOUT)
+                except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
                     spawn_calls.append(None)
                 else:
                     spawn_calls.append((
                         str(spawn_args.get("role", "")),
                         str(spawn_args.get("task", "")),
-                        int(spawn_args.get("timeout") or subagents.DEFAULT_SUBAGENT_TIMEOUT),
+                        timeout,
                     ))
             spawn_results: dict[str, dict[str, Any]] = {}
             spawn_parsed: dict[str, dict[str, Any]] = {}
@@ -1621,16 +1638,13 @@ In `_execute_loop`, inside the `while iteration < max_iterations:` block, after 
                 outcome_iter = iter(outcomes)
                 for item, call in zip(spawn_items, spawn_calls):
                     if call is None:
-                        spawn_results[item.call_id] = failure(
-                            "Invalid JSON arguments for spawn_subagent"
-                        )
-                    else:
-                        spawn_results[item.call_id] = next(outcome_iter)
-                        spawn_parsed[item.call_id] = {
-                            "role": call[0],
-                            "task": call[1],
-                            "timeout": call[2],
-                        }
+                        continue
+                    spawn_results[item.call_id] = next(outcome_iter)
+                    spawn_parsed[item.call_id] = {
+                        "role": call[0],
+                        "task": call[1],
+                        "timeout": call[2],
+                    }
 ```
 
 Then inside the existing `for item in output_items:` loop, replace the else-branch dispatch block:
@@ -1670,18 +1684,18 @@ with:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd agent && python -m pytest tests/test_subagents.py -q`
-Expected: 15 passed
+Run: `cd agent && python -m pytest tests/test_runtime.py -q`
+Expected: 2 passed (existing runtime tests + the new spawn-grouping test)
 
 - [ ] **Step 5: Run the full agent suite for regressions**
 
 Run: `cd agent && python -m pytest tests -q`
-Expected: all pass
+Expected: all pass (148 with the new test)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add agent/runtime.py agent/tests/test_subagents.py
+git add agent/runtime.py agent/tests/test_runtime.py
 git commit -m "feat: register subagents at init, parallel spawn dispatch in runtime"
 ```
 
