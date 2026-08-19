@@ -58,20 +58,34 @@ def _print_event(event: RuntimeEvent) -> None:
 
 
 def _first_run_prompt() -> tuple[str, str] | None:
-    """Prompt for endpoint/model on first run; None when configured."""
+    """Prompt for endpoint/model on first run; None when configured.
+
+    Re-prompts until a non-blank endpoint is given. Typing "exit" or
+    "quit" exits the program cleanly instead of configuring anything.
+    """
     cfg = load_config()
     if cfg.endpoint:
         return None
     print("First run: configure your Azure AI Foundry connection.")
-    endpoint = input("Project endpoint URL: ").strip()
-    if not endpoint:
-        return None
+    endpoint = ""
+    while not endpoint:
+        endpoint = input("Project endpoint URL: ").strip()
+        if endpoint.lower() in {"exit", "quit"}:
+            sys.exit(0)
+        if not endpoint:
+            print("Endpoint cannot be empty.")
     model = input(f"Model deployment name [{cfg.model}]: ").strip() or cfg.model
     return endpoint, model
 
 
 def main() -> None:
     """Run the Draft agent in CLI mode."""
+    first_run = _first_run_prompt()
+    if first_run is not None:
+        endpoint, model = first_run
+        save_config(endpoint=endpoint, model=model)
+        print("Configuration saved to .draft/config.json.")
+
     # Create event bus and runtime
     event_bus = EventBus()
     runtime = AgentRuntime(event_bus=event_bus)
@@ -79,12 +93,6 @@ def main() -> None:
     # Subscribe the print handler
     # (Using emit_threadsafe, events go to queues; we'll use a queue)
     queue = event_bus.create_queue()
-
-    first_run = _first_run_prompt()
-    if first_run is not None:
-        endpoint, model = first_run
-        save_config(endpoint=endpoint, model=model)
-        print("Configuration saved to .draft/config.json.")
 
     # Initialize the agent
     print("Initializing Draft agent...")

@@ -1,5 +1,7 @@
 """Tests for persistent configuration (endpoint + model)."""
 
+import json
+
 import pytest
 
 from config import (
@@ -84,8 +86,31 @@ def test_first_run_prompt_asks_and_returns_values(monkeypatch):
     assert model == "gpt-4.1-mini"
 
 
-def test_first_run_prompt_empty_endpoint_returns_none(monkeypatch):
+def test_first_run_prompt_retries_blank_endpoint(monkeypatch):
     clear_config()
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    answers = iter(["", "  ", "https://typed.azure.com", "gpt-4.1-mini"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     from agent import _first_run_prompt  # noqa: PLC0415
-    assert _first_run_prompt() is None
+    endpoint, model = _first_run_prompt()
+    assert endpoint == "https://typed.azure.com"
+    assert model == "gpt-4.1-mini"
+
+
+def test_first_run_prompt_exit_command(monkeypatch):
+    clear_config()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
+    from agent import _first_run_prompt  # noqa: PLC0415
+    with pytest.raises(SystemExit):
+        _first_run_prompt()
+
+
+def test_first_run_prompt_persists_config(monkeypatch, tmp_path):
+    clear_config()
+    answers = iter(["https://typed.azure.com", "gpt-4.1-mini"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    from agent import _first_run_prompt  # noqa: PLC0415
+    endpoint, model = _first_run_prompt()
+    save_config(endpoint=endpoint, model=model)
+    data = json.loads(config_path().read_text(encoding="utf-8"))
+    assert data["endpoint"] == "https://typed.azure.com"
+    assert data["model"] == "gpt-4.1-mini"
