@@ -1,11 +1,12 @@
 import os
 from pathlib import Path
-from dotenv import load_dotenv, set_key
+
+from config import ensure_loaded
 
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
 
-load_dotenv()
+ensure_loaded()
 
 # Create credential
 credential = DefaultAzureCredential()
@@ -32,19 +33,6 @@ def get_openai_client(endpoint: str | None = None):
         except Exception:
             return None
     return None
-
-def save_config(endpoint: str | None = None, model: str | None = None) -> None:
-    """Save configuration to .env and update current environment."""
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    if not env_path.exists():
-        env_path.touch()
-
-    if endpoint:
-        os.environ["PROJECT_ENDPOINT"] = endpoint
-        set_key(str(env_path), "PROJECT_ENDPOINT", endpoint)
-    if model:
-        os.environ["MODEL_DEPLOYMENT"] = model
-        set_key(str(env_path), "MODEL_DEPLOYMENT", model)
 
 # Module-level references
 project_endpoint = os.getenv("PROJECT_ENDPOINT")

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
+from config import load_config, save_config
 from event_bus import EventBus
 from events import (
     AgentCompleted,
@@ -56,6 +57,19 @@ def _print_event(event: RuntimeEvent) -> None:
         print(f"[SYSTEM] {event.content}")
 
 
+def _first_run_prompt() -> tuple[str, str] | None:
+    """Prompt for endpoint/model on first run; None when configured."""
+    cfg = load_config()
+    if cfg.endpoint:
+        return None
+    print("First run: configure your Azure AI Foundry connection.")
+    endpoint = input("Project endpoint URL: ").strip()
+    if not endpoint:
+        return None
+    model = input(f"Model deployment name [{cfg.model}]: ").strip() or cfg.model
+    return endpoint, model
+
+
 def main() -> None:
     """Run the Draft agent in CLI mode."""
     # Create event bus and runtime
@@ -65,6 +79,12 @@ def main() -> None:
     # Subscribe the print handler
     # (Using emit_threadsafe, events go to queues; we'll use a queue)
     queue = event_bus.create_queue()
+
+    first_run = _first_run_prompt()
+    if first_run is not None:
+        endpoint, model = first_run
+        save_config(endpoint=endpoint, model=model)
+        print("Configuration saved to .draft/config.json.")
 
     # Initialize the agent
     print("Initializing Draft agent...")

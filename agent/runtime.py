@@ -28,7 +28,8 @@ from openai.types.responses.response_input_param import (
     ResponseInputParam,
 )
 
-from credential import get_openai_client, get_project_client, save_config
+from config import save_config
+from credential import get_openai_client, get_project_client
 from dispatcher import ToolDispatcher
 from event_bus import EventBus
 from events import (

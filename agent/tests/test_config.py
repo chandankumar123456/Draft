@@ -65,3 +65,27 @@ def test_save_config_sets_environment():
     import os
     assert os.environ["PROJECT_ENDPOINT"] == "https://y.azure.com"
     assert os.environ["MODEL_DEPLOYMENT"] == "gpt-4.1"
+
+
+def test_first_run_prompt_skipped_when_configured(monkeypatch):
+    save_config(endpoint="https://configured.azure.com")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "should-not-be-called")
+    from agent import _first_run_prompt  # noqa: PLC0415
+    assert _first_run_prompt() is None
+
+
+def test_first_run_prompt_asks_and_returns_values(monkeypatch):
+    clear_config()
+    answers = iter(["https://typed.azure.com", "gpt-4.1-mini"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    from agent import _first_run_prompt  # noqa: PLC0415
+    endpoint, model = _first_run_prompt()
+    assert endpoint == "https://typed.azure.com"
+    assert model == "gpt-4.1-mini"
+
+
+def test_first_run_prompt_empty_endpoint_returns_none(monkeypatch):
+    clear_config()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    from agent import _first_run_prompt  # noqa: PLC0415
+    assert _first_run_prompt() is None
