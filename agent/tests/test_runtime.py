@@ -161,3 +161,68 @@ def test_execute_loop_groups_spawn_subagent_calls(monkeypatch):
     rt.cleanup()
     for name in ("Draft-Investigator", "Draft-Implementer", "Draft-Verifier"):
         assert (name, "v1") in fake_pc.deleted
+
+
+def test_execute_loop_skips_spawn_with_unparsable_timeout(monkeypatch):
+    fake_pc = _FakeProjectClient()
+    fake_oa = _FakeRuntimeOpenAI([
+        _FakeResponse([
+            _FakeItem("function_call", name="spawn_subagent",
+                      arguments=json.dumps({
+                          "role": "investigator",
+                          "task": "inspect repo",
+                          "timeout": 60,
+                      }),
+                      call_id="fc1"),
+            _FakeItem("function_call", name="spawn_subagent",
+                      arguments=json.dumps({
+                          "role": "implementer",
+                          "task": "add flag",
+                          "timeout": "30 seconds",
+                      }),
+                      call_id="fc2"),
+            _FakeItem("function_call", name="spawn_subagent",
+                      arguments=json.dumps({
+                          "role": "verifier",
+                          "task": "run checks",
+                      }),
+                      call_id="fc3"),
+        ]),
+        _FakeResponse([], output_text="all done"),
+    ])
+    monkeypatch.setattr(runtime_module, "get_project_client", lambda ep: fake_pc)
+    monkeypatch.setattr(runtime_module, "get_openai_client", lambda ep: fake_oa)
+
+    batch_calls: list[tuple[str, str, int]] = []
+    batch_results = [
+        {"success": True, "data": {
+            "role": "investigator", "summary": "investigator done",
+            "iterations": 1, "tool_calls": 0, "duration_seconds": 0.1,
+        }, "message": "ok", "error": None},
+        {"success": True, "data": {
+            "role": "verifier", "summary": "verifier done",
+            "iterations": 1, "tool_calls": 0, "duration_seconds": 0.1,
+        }, "message": "ok", "error": None},
+    ]
+
+    def fake_run_batch(calls):
+        batch_calls.extend(calls)
+        return batch_results
+
+    monkeypatch.setattr(subagents, "run_batch", fake_run_batch)
+
+    event_bus = EventBus()
+    rt = runtime_module.AgentRuntime(event_bus=event_bus)
+    rt.initialize()
+    rt._execute_loop("delegate work")
+
+    assert batch_calls == [
+        ("investigator", "inspect repo", 60),
+        ("verifier", "run checks", 300),
+    ]
+
+    fed_back = fake_oa.sent_inputs[-1]
+    assert [item["call_id"] for item in fed_back] == ["fc1", "fc2", "fc3"]
+    assert "investigator done" in fed_back[0]["output"]
+    assert '"success": false' in fed_back[1]["output"]
+    assert "verifier done" in fed_back[2]["output"]

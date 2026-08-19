@@ -51,7 +51,6 @@ from instructions import instructions
 from tools.tools import ALL_TOOLS
 
 import subagents
-from tools.functions import failure
 
 logger = logging.getLogger(__name__)
 
@@ -369,13 +368,14 @@ class AgentRuntime:
                 spawn_items.append(item)
                 try:
                     spawn_args = json.loads(item.arguments)
-                except (json.JSONDecodeError, AttributeError):
+                    timeout = int(spawn_args.get("timeout") or subagents.DEFAULT_SUBAGENT_TIMEOUT)
+                except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
                     spawn_calls.append(None)
                 else:
                     spawn_calls.append((
                         str(spawn_args.get("role", "")),
                         str(spawn_args.get("task", "")),
-                        int(spawn_args.get("timeout") or subagents.DEFAULT_SUBAGENT_TIMEOUT),
+                        timeout,
                     ))
             spawn_results: dict[str, dict[str, Any]] = {}
             spawn_parsed: dict[str, dict[str, Any]] = {}
@@ -385,16 +385,13 @@ class AgentRuntime:
                 outcome_iter = iter(outcomes)
                 for item, call in zip(spawn_items, spawn_calls):
                     if call is None:
-                        spawn_results[item.call_id] = failure(
-                            "Invalid JSON arguments for spawn_subagent"
-                        )
-                    else:
-                        spawn_results[item.call_id] = next(outcome_iter)
-                        spawn_parsed[item.call_id] = {
-                            "role": call[0],
-                            "task": call[1],
-                            "timeout": call[2],
-                        }
+                        continue
+                    spawn_results[item.call_id] = next(outcome_iter)
+                    spawn_parsed[item.call_id] = {
+                        "role": call[0],
+                        "task": call[1],
+                        "timeout": call[2],
+                    }
 
             for item in output_items:
                 if self._cancel_event.is_set():
