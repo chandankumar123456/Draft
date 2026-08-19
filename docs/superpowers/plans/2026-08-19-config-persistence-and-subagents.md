@@ -415,10 +415,13 @@ git commit -m "feat: CLI first-run config prompt; credential uses config module"
 ```python
 """Tests for TUI config persistence (.draft/config.json)."""
 
-import pytest
+import json
 from pathlib import Path
 
+import pytest
+
 from tui.app import DraftApp
+from tui.screens import ConfigModal
 
 _TUI_STYLES = (
     Path(__file__).resolve().parent.parent / "tui" / "styles.tcss"
@@ -445,29 +448,49 @@ async def test_update_endpoint_persists_to_config(tmp_path, monkeypatch) -> None
     async with app.run_test(size=(80, 24)):
         app._update_endpoint("https://persisted.azure.com")
 
-    from config import load_config
-    assert load_config().endpoint == "https://persisted.azure.com"
+    from config import config_path
+    data = json.loads(config_path().read_text(encoding="utf-8"))
+    assert data["endpoint"] == "https://persisted.azure.com"
 
 
 @pytest.mark.anyio
 async def test_config_reset_clears_saved_config(tmp_path, monkeypatch) -> None:
-    """/config-reset deletes the saved config file."""
+    """/config-reset deletes the saved config file and reopens the modal."""
     import config as config_module
-    from config import clear_config, config_path, save_config
+    from config import config_path, save_config
 
     monkeypatch.setattr(config_module, "_project_root", lambda: tmp_path)
     monkeypatch.setattr(config_module, "_LOADED", False)
     save_config(endpoint="https://persisted.azure.com")
     assert config_path().exists()
 
-    clear_config()
+    app = _TestDraftApp()
+    async with app.run_test(size=(80, 24)):
+        app._handle_slash_command("/config-reset")
+
     assert not config_path().exists()
+    assert "PROJECT_ENDPOINT" not in config_module.os.environ
+    assert isinstance(app.screen, ConfigModal)
 ```
+
+- [ ] **Step 1b: Protect the developer's real config during the root suite**
+
+`tests/test_tui_features.py` drives `/endpoint` and `/model` slash commands against the real project root. Since `_update_endpoint`/`_update_model` now persist on every change (this task), a full root `pytest tests -q` would overwrite a real `.draft/config.json`. In `tests/test_tui_features.py`, add an autouse fixture that redirects the config location and resets the loaded flag:
+
+```python
+@pytest.fixture(autouse=True)
+def _isolate_config(tmp_path, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(config_module, "_LOADED", False)
+```
+
+(Place it at module level, before the test classes. Import `pytest` first if not already imported.)
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_tui_config.py -q` (repo root)
-Expected: FAIL — `AssertionError: assert '' == 'https://persisted.azure.com'`
+Expected: FAIL — `FileNotFoundError` reading the config file (test 1; file never created without the fix) and/or the `/config-reset` assertions failing
 
 - [ ] **Step 3: Update `tui/app.py`**
 
@@ -551,13 +574,13 @@ In `write_config_summary`, extend the hint line to:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `python -m pytest tests -q` (repo root)
-Expected: all pass (6 existing + 2 new)
+Expected: all pass (38 existing + 2 new = 40)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tui/app.py tui/widgets/workspace.py tests/test_tui_config.py
-git commit -m "fix: persist TUI config on all entry paths; add /config-reset"
+git add tui/app.py tui/widgets/workspace.py tests/test_tui_config.py tests/test_tui_features.py
+git commit -m "feat: persist TUI config on all entry paths; add /config-reset"
 ```
 
 ---
