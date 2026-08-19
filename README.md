@@ -7,7 +7,7 @@
 [![Responses API](https://img.shields.io/badge/LLM-OpenAI%20Responses%20API-black)](https://platform.openai.com/)
 [![TUI](https://img.shields.io/badge/TUI-Textual-purple)](https://textual.textualize.io/)
 [![Status](https://img.shields.io/badge/Status-Active%20Development-orange)]()
-[![Tests](https://img.shields.io/badge/Tests-128%20cases-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-192%20cases-brightgreen)]()
 
 ---
 
@@ -76,7 +76,7 @@ At every step the model observes the outcome of its previous action, so each dec
 - **Safe arithmetic calculator** — numeric computation without shell execution.
 - **Human approval gate** — tools are risk-classified as READ_ONLY, SAFE, REQUIRES_APPROVAL, or BLOCKED, with an approval modal for human-in-the-loop control.
 - **Live TUI cockpit** — the "Draft Developer Cockpit" (`python run_tui.py`) provides timeline, diff, git, and test dashboards plus drag-to-select log text; a plain terminal CLI (`agent/agent.py`) is also available.
-- **Tooling surface** — 50 custom tools (filesystem, code search, code editing, execution, environment, project understanding, git, web, utilities) plus the Azure WebSearchTool.
+- **Tooling surface** — 51 custom tools (filesystem, code search, code editing, execution, environment, project understanding, git, web, utilities, subagents) plus the Azure WebSearchTool.
 - **Event-driven architecture** — an EventBus pub/sub system with frozen dataclass runtime events (AgentStarted, ToolStarted, ToolCompleted, PatchApplied, TestCompleted, ApprovalRequested, and others).
 
 ### Key Dependencies
@@ -138,7 +138,7 @@ Draft is a framework-free autonomous software-engineering agent built directly o
 ┌─────────────────────────────────────────────┐
 │   Azure AI Foundry — Draft-Main-Agent       │
 │   PromptAgentDefinition (gpt-4.1-mini,      │
-│   ~3700-word instructions, 50 FunctionTools │
+│   ~3700-word instructions, 51 FunctionTools │
 │   + WebSearchTool), OpenAI Responses API    │
 └──────────────────┬──────────────────────────┘
                    │  response items: function_call
@@ -152,7 +152,7 @@ Draft is a framework-free autonomous software-engineering agent built directly o
 └──────────────────┬──────────────────────────┘
                    ▼
 ┌─────────────────────────────────────────────┐
-│           TOOL_REGISTRY (50 tools)          │
+│           TOOL_REGISTRY (51 tools)          │
 │  name → callable · strict schemas           │
 │  (additionalProperties=False)               │
 └──────────────────┬──────────────────────────┘
@@ -164,7 +164,7 @@ Draft is a framework-free autonomous software-engineering agent built directly o
 └─────────────────────────────────────────────┘
 ```
 
-**Control flow.** The user submits a prompt from the TUI or CLI. `AgentRuntime._execute_loop` injects it into a persistent Azure conversation as a message item, then calls the Responses API with an `agent_reference` to `Draft-Main-Agent` plus the full conversation history. The model decides which of its 50 tools to invoke and returns `function_call` response items. The runtime parses each call's JSON arguments, routes it through `ToolDispatcher.dispatch_sync` into the registry, and collects the result envelope. Tool results are serialized with `json.dumps` and appended as `FunctionCallOutput` entries, then submitted back to the model with `previous_response_id` for the next turn. This request–dispatch–observe cycle repeats until the model produces a text-only response. The TUI runs the loop on a worker thread and consumes events asynchronously; the CLI prints prefixed event lines to the console.
+**Control flow.** The user submits a prompt from the TUI or CLI. `AgentRuntime._execute_loop` injects it into a persistent Azure conversation as a message item, then calls the Responses API with an `agent_reference` to `Draft-Main-Agent` plus the full conversation history. The model decides which of its 51 tools to invoke and returns `function_call` response items. The runtime parses each call's JSON arguments, routes it through `ToolDispatcher.dispatch_sync` into the registry, and collects the result envelope. Tool results are serialized with `json.dumps` and appended as `FunctionCallOutput` entries, then submitted back to the model with `previous_response_id` for the next turn. This request–dispatch–observe cycle repeats until the model produces a text-only response. The TUI runs the loop on a worker thread and consumes events asynchronously; the CLI prints prefixed event lines to the console.
 
 ### Core Agent Loop
 
@@ -186,14 +186,18 @@ Generate ─▶ Execute ─▶ Observe ─▶ Detect failure ─▶ Analyze ─�
 
 Each failed tool result is observed, analyzed for cause, and repaired by a follow-up tool call (edit, patch, or test rerun); success is only reported after the verify step (tests, lint, or typecheck) passes.
 
+### Subagents (orchestrator pattern)
+
+The main agent can delegate bounded work to three specialist subagents through the `spawn_subagent` tool: `investigator` (explore/search/research), `implementer` (write/edit code), and `verifier` (run tests/lint/typecheck). Each role is a hosted agent version (`Draft-Investigator`, `Draft-Implementer`, `Draft-Verifier`) with role-specific instructions and a curated tool subset, invoked via `agent_reference` in fresh conversations. All `spawn_subagent` calls in one response batch run concurrently (thread pool, max 3). Subagent tool calls flow through the same `ToolDispatcher` (risk classification, events, approval), and their activity surfaces in the workspace log and timeline via `SubagentStarted` / `SubagentMessage` / `SubagentCompleted` / `SubagentFailed` events. Subagents cannot spawn subagents; each run is capped at 25 iterations with a 300-second default timeout.
+
 ### Component Breakdown
 
 | Component | Module | Responsibility | Key Interfaces |
 |---|---|---|---|
 | AgentRuntime | `agent/runtime.py` | Orchestrates the agent loop: conversation injection, `agent_reference` calls, `function_call` parsing, `previous_response_id` chaining, 50-iteration limit, cancellation | `AgentRuntime._execute_loop()`, `AgentState`, `threading.Event` |
 | ToolDispatcher | `agent/dispatcher.py` | Routes tool calls, classifies risk, enforces the approval gate, emits tool and derived events, wraps results in envelopes | `dispatch_sync()`, `request_approval()`, `resolve_approval()`, `classify_tool()`, `asyncio.Event` |
-| Tool Registry | `agent/tools/registry.py` | Maps 50 tool names to callable implementations | `TOOL_REGISTRY: dict[str, Callable]` |
-| Tool Schemas | `agent/tools/tools.py` | 50 `FunctionTool` schemas with `strict=True`, `additionalProperties=False` | `ALL_TOOLS: list[FunctionTool]` |
+| Tool Registry | `agent/tools/registry.py` | Maps 51 tool names to callable implementations | `TOOL_REGISTRY: dict[str, Callable]` |
+| Tool Schemas | `agent/tools/tools.py` | 51 `FunctionTool` schemas with `strict=True`, `additionalProperties=False` | `ALL_TOOLS: list[FunctionTool]` |
 | Tool Implementations | `agent/tools/functions.py` | Actual filesystem, shell, git, web, Python, and test operations | `success()`, `failure()` envelope helpers |
 | Event Bus | `agent/event_bus.py` | Async pub/sub: callback subscriptions, bounded `asyncio.Queue` subscriptions (maxsize 1000, drop-and-warn), thread-safe emission, event history | `subscribe()`, `emit()`, `emit_threadsafe()`, `history` |
 | Event Model | `agent/events.py` | Frozen dataclass event definitions, status/phase/risk enums, mutable `AgentState` | `RuntimeEvent`, `AgentState`, `AgentStatus`, `AgentPhase`, `RiskLevel` |
@@ -251,10 +255,10 @@ Failures set `success: false` and populate `error`; `data` is always attached, e
 
 **Risk classification.** Every tool carries a risk level used by the dispatcher's gate:
 
-| Risk level | Tools (23) | Example tools | Gate |
+| Risk level | Tools (51) | Example tools | Gate |
 |---|---|---|---|
 | `READ_ONLY` | 23 | `read_file`, `grep`, `search_code`, `git_diff`, `git_log`, `inspect_project` | none |
-| `SAFE` | 6 | `check_syntax`, `calculate`, `generate_uuid`, `search_web`, `fetch_url`, `get_current_time` | none |
+| `SAFE` | 7 | `check_syntax`, `calculate`, `generate_uuid`, `search_web`, `fetch_url`, `get_current_time`, `spawn_subagent` | none |
 | `REQUIRES_APPROVAL` | 21 | `write_file`, `apply_patch`, `delete_file`, `run_command`, `run_python`, `run_tests`, `git_commit`, `git_stash` | approval modal |
 | `BLOCKED` | 0 | — | hard block |
 
@@ -338,6 +342,8 @@ MODEL_DEPLOYMENT=<your-model-deployment>
 
 `.env` is listed in `.gitignore`, so secrets are never committed. Treat the endpoint and deployment names as environment configuration, not credentials, and never commit environment files to the repository.
 
+**Persistent config.** On first run you are asked for the project endpoint and model deployment; the values are stored in `.draft/config.json` (gitignored) and reused on every later launch. Load precedence: `.draft/config.json` → `.env` → default `gpt-4.1-mini`. Use `/endpoint <url>`, `/model <name>` in the TUI (or `/config-reset` to clear and re-enter), and the first-run prompts in the CLI.
+
 Authentication uses `DefaultAzureCredential` (via `azure-identity`) and does not require any API keys in code. For local development, sign in once with the Azure CLI:
 
 ```bash
@@ -366,6 +372,8 @@ Inspect this repository and report its structure
 
 Key bindings: F2 toggles the project explorer, F3 focuses the prompt, F4 opens the tool inspector, F5 shows the diff view, F6 shows the git view, F7 shows the timeline/logs, Ctrl+K opens the command palette, Ctrl+Shift+C copies the selection, and Ctrl+C quits with cleanup. Drag to select log text, which auto-copies on release. Approvals are confirmed with A (approve), D (deny), or Escape (deny).
 
+First launch prompts for the project endpoint and model deployment; the values are persisted to `.draft/config.json` so later launches skip the prompt.
+
 #### Running the CLI
 
 ```bash
@@ -386,7 +394,7 @@ Complete the following steps to confirm the installation is correct.
    python -m pytest tests -q
    ```
 
-   122 test cases are collected and all pass.
+   149 test cases are collected and all pass.
 
 2. Run the TUI selection tests (from the project root):
 
@@ -394,7 +402,7 @@ Complete the following steps to confirm the installation is correct.
    python -m pytest tests -q
    ```
 
-   6 tests are collected and all pass. These tests require the `anyio` plugin registered in the root `conftest.py`.
+   43 tests are collected and all pass. These tests require the `anyio` plugin registered in the root `conftest.py`.
 
 3. Launch the TUI and confirm that the status header shows `IDLE` together with the project, branch, and model information:
 
@@ -497,7 +505,7 @@ Contract rules:
 
 ### Tool Catalog
 
-The 50 custom tools in `TOOL_REGISTRY` fall into nine categories. All parameters are optional unless marked with an asterisk (`*`). Defaults: paths resolve relative to the current working directory, timeouts are in seconds.
+The 51 custom tools in `TOOL_REGISTRY` fall into ten categories. All parameters are optional unless marked with an asterisk (`*`). Defaults: paths resolve relative to the current working directory, timeouts are in seconds.
 
 #### Filesystem (10)
 
@@ -593,6 +601,12 @@ The 50 custom tools in `TOOL_REGISTRY` fall into nine categories. All parameters
 | `get_current_time` | `utc=False` | Current date/time |
 | `calculate` | `expression*` | Arithmetic via AST-whitelist sandbox; never `eval` |
 | `generate_uuid` | — | Generate a UUID v4 |
+
+#### Subagents (1)
+
+| Tool | Parameters | Purpose |
+|---|---|---|
+| `spawn_subagent` | `role*` (investigator/implementer/verifier), `task*`, `timeout?` (default 300) | Delegate a bounded subtask to a specialist subagent; returns its final report envelope |
 
 ### Result Semantics & Error Handling
 
@@ -807,13 +821,13 @@ Truncated results carry `truncated` flags in the result data.
 2. `agent/tools/registry.py` — import and register the function in `TOOL_REGISTRY`.
 3. `agent/dispatcher.py` — classify the tool in the risk registry (`READ_ONLY`, `SAFE`, or `REQUIRES_APPROVAL`; `BLOCKED` is unused, 0 tools).
 
-Current risk profile: 23 `READ_ONLY`, 6 `SAFE`, 21 `REQUIRES_APPROVAL`, 0 `BLOCKED`.
+Current risk profile: 23 `READ_ONLY`, 7 `SAFE`, 21 `REQUIRES_APPROVAL`, 0 `BLOCKED`.
 
 **Testing.** The agent suite requires `pytest` and `anyio` (not in `requirements.txt`; install explicitly). Git tests run against a scratch repository fixture and never touch the real repo. Run both suites before committing:
 
 ```bash
-cd agent && python -m pytest tests -q    # agent suite (122 tests)
-cd .. && python -m pytest tests -q       # TUI suite (6 tests)
+cd agent && python -m pytest tests -q    # agent suite (149 tests)
+cd .. && python -m pytest tests -q       # TUI suite (43 tests)
 ```
 
 **Commit conventions.** Use the observed conventional prefixes (`feat:`, `refactor:`, `chore:`, `test:`, `style:`). Keep commits scoped; history (72 commits on `main` plus `wave-*`/`feature-*` integration branches) uses short, descriptive subjects. Push to `github.com/chandankumar123456/Draft`.
@@ -845,17 +859,17 @@ Draft/
 │   ├── credential.py          # DefaultAzureCredential, AIProjectClient, openai_client (19 lines)
 │   ├── tools/
 │   │   ├── functions.py       # 50 tool implementations (3,345 lines)
-│   │   ├── registry.py        # TOOL_REGISTRY dict (122 lines)
-│   │   └── tools.py           # 50 FunctionTool schemas, ALL_TOOLS (1,010 lines)
-│   └── tests/                 # 8 files, 122 test cases
+│   │   ├── registry.py        # TOOL_REGISTRY dict (126 lines)
+│   │   └── tools.py           # 51 FunctionTool schemas, ALL_TOOLS (1,080 lines)
+│   └── tests/                 # 11 files, 149 test cases
 ├── tui/                       # Textual interface, "Draft Developer Cockpit"
 │   ├── app.py                 # DraftApp, 3-column cockpit (616 lines)
 │   ├── screens.py             # Diff, Tool Inspector, Timeline, Test Dashboard (unused), Git
 │   ├── widgets.py             # 13 custom widgets (1,133 lines)
 │   ├── messages.py            # Textual messages (RuntimeEventReceived used; 4 unused)
 │   └── styles.tcss            # Dark navy theme (284 lines)
-├── tests/
-│   └── test_tui_selection.py  # 6 async TUI tests (anyio, Textual run_test pilot)
+├── tests/                     # 6 TUI suites (workspace, features, ux, selection, config, subagents)
+│                              #   43 async tests (anyio, Textual run_test pilot)
 └── Plan/                      # Gitignored design assets: 14 PNG slides,
                                #   Draft Architecture.pdf, Plan.pdf (image-based)
 ```
@@ -863,11 +877,11 @@ Draft/
 | Directory / File | Purpose |
 |---|---|
 | `run_tui.py` | Entry point for the cockpit; path setup, launches `DraftApp`. |
-| `agent/` | Core agent: runtime loop, tool dispatch, event model, Azure credentials, 50 tools. |
+| `agent/` | Core agent: runtime loop, tool dispatch, event model, Azure credentials, 51 tools. |
 | `agent/tools/` | Tool implementations, JSON-schema definitions, lookup registry. |
-| `agent/tests/` | Eight agent test suites (122 cases). |
+| `agent/tests/` | Eleven agent test suites (149 cases). |
 | `tui/` | "Draft Developer Cockpit": 3-column layout, panels, screens, styling. |
-| `tests/` | Root suite exercising TUI behavior via Textual's `run_test` pilot. |
+| `tests/` | Six root TUI suites (43 cases) exercising TUI behavior via Textual's `run_test` pilot. |
 | `Plan/` | Design deliverables (slides and PDFs), gitignored. |
 
 Two honesty notes. `agent/main.py` is an empty placeholder (0 bytes) and not an entry point; the CLI entry lives in `agent/agent.py`. `agent/prompts.py` is likewise empty; the system prompt is maintained in `agent/instructions.py`.
@@ -878,7 +892,7 @@ Two honesty notes. `agent/main.py` is an empty placeholder (0 bytes) and not an 
 
 ### Test Overview
 
-Draft ships 128 test cases across nine suites (109 test functions): 122 agent tests plus 6 TUI tests. All suites share `assert_envelope`, which verifies the `{success, data, message, error}` contract every tool response must honor.
+Draft ships 192 test cases across 17 suites (173 test functions): 149 agent tests plus 43 TUI tests. All suites share `assert_envelope`, which verifies the `{success, data, message, error}` contract every tool response must honor.
 
 | Suite | Location | Cases | Focus |
 |---|---|---|---|
@@ -890,13 +904,21 @@ Draft ships 128 test cases across nine suites (109 test functions): 122 agent te
 | Project | `agent/tests/test_project.py` | 6 | Project introspection |
 | Search | `agent/tests/test_search.py` | 15 (13 fns) | Search and result shaping |
 | Utilities | `agent/tests/test_utilities.py` | 17 (6 fns) | Shared helpers |
+| Config | `agent/tests/test_config.py` | 11 | Persistent config (`.draft/config.json`) load/save and precedence |
+| Runtime | `agent/tests/test_runtime.py` | 2 | AgentRuntime subagent integration (spawn grouping, concurrency) |
+| Subagents | `agent/tests/test_subagents.py` | 14 | Subagent events, roles, runner, runtime integration |
 | TUI Selection | `tests/test_tui_selection.py` | 6 | Drag-selection protocol in the cockpit |
+| TUI Workspace | `tests/test_tui_workspace.py` | 12 | Tool cards, smart auto-scroll, selection stability |
+| TUI Features | `tests/test_tui_features.py` | 14 | Slash commands, multiline input, config modal, streaming, diff rendering |
+| TUI UX | `tests/test_tui_ux.py` | 6 | Header toggle, input affordances, thinking indicator, stop mechanism, footer bar |
+| TUI Config | `tests/test_tui_config.py` | 2 | TUI config persistence (`.draft/config.json`) |
+| TUI Subagents | `tests/test_tui_subagents.py` | 3 | Subagent event rendering in the workspace |
 
 ### Running the Test Suites
 
 ```bash
-cd agent && python -m pytest tests -q    # agent suites (122 cases)
-python -m pytest tests -q                # root suite (6 cases)
+cd agent && python -m pytest tests -q    # agent suites (149 cases)
+python -m pytest tests -q                # root suites (43 cases)
 ```
 
 Python 3.11+ is required. Both suites depend on `pytest` (9.1.1) and `anyio` (4.14.2), installed in the project virtual environment (`draft_venv`) but not declared in `requirements.txt`; see Known Quality Gaps.
@@ -934,7 +956,7 @@ The following are tracked as an improvement backlog rather than resolved issues:
 | DefaultAzureCredential | Azure Identity credential chain used by `credential.py` to authenticate against Azure AI Foundry endpoints without hard-coded secrets. |
 | Envelope | The uniform response container `{success, data, message, error}` returned by every tool and asserted by `assert_envelope` in tests. |
 | EventBus | Pub/sub component (`agent/event_bus.py`) decoupling runtime internals from UI and logging consumers. |
-| FunctionTool | A tool exposed to the model as a callable function with a JSON schema; Draft defines 50 via the Azure AI Foundry SDK. |
+| FunctionTool | A tool exposed to the model as a callable function with a JSON schema; Draft defines 51 via the Azure AI Foundry SDK. |
 | Human-in-the-Loop | Design principle by which risky operations pause for operator review through approval gates rather than executing autonomously. |
 | MCP | Model Context Protocol; a standardization context for tool and agent interoperability (referenced in Draft's design materials). |
 | PromptAgentDefinition | Azure AI Foundry construct describing an agent's instructions and tool configuration; the basis of the Draft-Main-Agent definition. |
