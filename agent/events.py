@@ -309,6 +309,44 @@ class ApprovalResponse(RuntimeEvent):
 
 
 # ────────────────────────────────────────────────────────────────
+# Subagent Events
+# ────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SubagentStarted(RuntimeEvent):
+    """Emitted when a subagent begins processing a delegated task."""
+    role: str = ""
+    task: str = ""
+    agent_name: str = ""
+
+
+@dataclass(frozen=True)
+class SubagentMessage(RuntimeEvent):
+    """Emitted with the subagent's final report text."""
+    role: str = ""
+    content: str = ""
+
+
+@dataclass(frozen=True)
+class SubagentCompleted(RuntimeEvent):
+    """Emitted when a subagent finishes its task."""
+    role: str = ""
+    task: str = ""
+    iterations: int = 0
+    tool_calls: int = 0
+    duration_seconds: float = 0.0
+    result: str = ""
+
+
+@dataclass(frozen=True)
+class SubagentFailed(RuntimeEvent):
+    """Emitted when a subagent fails or is cancelled."""
+    role: str = ""
+    task: str = ""
+    error: str = ""
+
+
+# ────────────────────────────────────────────────────────────────
 # State Snapshot (not an event, but a point-in-time view)
 # ────────────────────────────────────────────────────────────────
 
